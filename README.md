@@ -17,7 +17,7 @@
 ### Commands
 ```bash
 # Download the video from 1434 seconds (23:54) to 1550 seconds
-yt-dlp https://www.youtube.com/watch?v=eoXguTDnnHM --download-sections "*1434-1550" -f best -o "output.mp4"
+yt-dlp https://www.youtube.com/watch?v=eoXguTDnnHM --download-sections "*1434-1550" -f best -o "input.mp4"
 ```
 ### Parameters Explanation
 1. `-ss` 1434: Specifies the start time in seconds (1434 seconds = 23 minutes 54 seconds).
