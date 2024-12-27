@@ -17,10 +17,4 @@ def mask_lanes_colors(image: ThreeChannelArray) -> ThreeChannelArray:
 
     combined_mask = cv2.bitwise_or(mask_white, mask_yellow)
 
-    kernel = np.ones((3, 3), np.uint8)
-    combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
-
-    return cv2.cvtColor(
-        cv2.bitwise_and(image, image, mask=combined_mask),
-        cv2.COLOR_HSV2RGB,
-    )
+    return cv2.bitwise_and(image, image, mask=combined_mask)

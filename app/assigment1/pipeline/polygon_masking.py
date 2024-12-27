@@ -10,13 +10,17 @@ def mask_polygon(frame: GrayScaleArray) -> GrayScaleArray:
         width,
     ) = frame.shape
     # Trapezoid
-    vertices = np.array(
+    polygons = np.array(
         [
-            [0, height],
-            [width * 1 / 2, height * 1 / 2],
-            [width, height],
+            [
+                (0, height),
+                (width, height),
+                (int(width * 0.6), int(height * 0.6)),
+                (int(width * 0.4), int(height * 0.6)),
+            ],
         ],
+        dtype=np.int32,
     )
     mask = np.zeros_like(frame)
-    cv2.fillPoly(mask, np.int32([vertices]), [255])
+    cv2.fillPoly(mask, polygons, [255])
     return cv2.bitwise_and(frame, mask)

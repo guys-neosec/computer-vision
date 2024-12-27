@@ -2,6 +2,7 @@
 Algorithm Pipeline
 """
 
+from collections.abc import Iterable
 from pathlib import Path
 
 import cv2
@@ -28,30 +29,40 @@ def detect_edges(video: cv2.VideoCapture, path: Path) -> Path:
         (width, height),
     )
     progress_bar = progressbar(metadata.frame_count)
-    while (read := video.read())[0]:
-        (_, frame) = read
-        frame: ThreeChannelArray = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        modified_frame = transform_frame(frame)
-        lines = cv2.HoughLinesP(
-            modified_frame,
-            rho=6,
-            theta=np.pi / 60,
-            threshold=160,
-            lines=np.array([]),
-            minLineLength=40,
-            maxLineGap=25,
+    for frame in get_frames(video):
+        lanes_frame = extract_lanes_feature(frame)
+        lines = cv2.HoughLines(
+            lanes_frame,
+            rho=1,
+            theta=np.pi / 180,
+            threshold=55,
+            srn=0,
+            stn=0,
         )
         new_frame = draw_lines(frame, lines)
         output_video.write(cv2.cvtColor(new_frame, cv2.COLOR_RGB2BGR))
         progress_bar()
 
-    video.release()
     output_video.release()
     return path
 
 
-def transform_frame(frame: ThreeChannelArray) -> ThreeChannelArray:
-    masked_colors_frame = mask_lanes_colors(frame)
+def get_frames(video: cv2.VideoCapture) -> Iterable[ThreeChannelArray]:
+    logger.debug("Iterating through video frames")
+    while (read := video.read())[0]:
+        (_, frame) = read
+        frame: ThreeChannelArray = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        yield frame
+    video.release()
+    return
+
+
+def extract_lanes_feature(frame: ThreeChannelArray) -> ThreeChannelArray:
+    bilateral_filtered_frame = cv2.bilateralFilter(frame, 15, 75, 75)
+    masked_colors_frame = mask_lanes_colors(bilateral_filtered_frame)
     gray_frame = cv2.cvtColor(masked_colors_frame, cv2.COLOR_RGB2GRAY)
-    cannyed_framed = cv2.Canny(gray_frame, 100, 200)
-    return mask_polygon(cannyed_framed)
+    cannyed_framed = cv2.Canny(gray_frame, 50, 300)
+    kernel = np.ones((3, 3), np.uint8)
+
+    processed_frame = cv2.morphologyEx(cannyed_framed, cv2.MORPH_DILATE, kernel)
+    return mask_polygon(processed_frame)

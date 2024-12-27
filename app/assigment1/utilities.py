@@ -40,7 +40,7 @@ def progressbar(
         time_str = f"{int(mins):02}:{sec:03.1f}"
         print(
             f"{prefix}[{'█' * x}{('.' * (size - x))}] "
-            f"{progress}/{count} Est wait {time_str}",
+            f"{int(progress)}/{count} Est wait {time_str}",
             end="\r",
             file=out,
             flush=True,
