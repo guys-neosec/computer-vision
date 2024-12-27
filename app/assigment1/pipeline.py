@@ -3,13 +3,18 @@ Algorithm Pipeline
 """
 
 from pathlib import Path
+from typing import Annotated, Literal, TypeVar
 
 import cv2
 import numpy as np
+import numpy.typing as npt
 from loguru import logger
-from numpy import ndarray
 
 from app.assigment1.utilities import extract_metadata
+
+DType = TypeVar("DType", bound=np.generic)
+RGBArray = Annotated[npt.NDArray[DType], Literal["H", "W", 3]]
+GrayScaleArray = Annotated[npt.NDArray[DType], Literal["H", "W"]]
 
 
 def detect_edges(video: cv2.VideoCapture, path: Path) -> Path:
@@ -33,17 +38,25 @@ def detect_edges(video: cv2.VideoCapture, path: Path) -> Path:
     return path
 
 
-def handle_frame(frame: ndarray) -> ndarray:
-    return _mask_frame(frame)
+def handle_frame(frame: RGBArray) -> RGBArray:
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    cannyed_framed = cv2.Canny(gray_frame, 100, 200)
+    return _mask_frame(cannyed_framed)
 
 
-def _mask_frame(frame: ndarray) -> ndarray:
-    height, width, _ = frame.shape
+def _mask_frame(frame: GrayScaleArray) -> GrayScaleArray:
+    (
+        height,
+        width,
+    ) = frame.shape
     vertices = np.array(
-        [[0, height], [width / 2, height / 2], [width, height]],
+        [
+            [0, height],
+            [width * 3 / 8, height / 2],
+            [width * 5 / 8, height / 2],
+            [width, height],
+        ],
     )
     mask = np.zeros_like(frame)
-    # Fill inside the polygon
     cv2.fillPoly(mask, np.int32([vertices]), (255, 255, 255))
-    # Returning the image only where mask pixels match
     return cv2.bitwise_and(frame, mask)
