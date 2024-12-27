@@ -17,7 +17,7 @@ def draw_lines(
 ) -> ThreeChannelArray:
     if lines is None or len(lines) == 0:
         return frame
-    height, width = frame.shape[:2]
+    # height, width = frame.shape[:2]
     # grouped_lines = _group_lines((height, width), lines)
     copied_frame = np.copy(frame)
     for line in lines:
