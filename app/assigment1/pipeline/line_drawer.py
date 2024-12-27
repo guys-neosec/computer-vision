@@ -18,21 +18,7 @@ def draw_lines(
     if lines is None or len(lines) == 0:
         return frame
     copied_frame = np.copy(frame)
-    (
-        height,
-        width,
-        _,
-    ) = frame.shape
-    line_img = np.zeros(
-        (
-            height,
-            width,
-            RGB_CHANNELS,
-        ),
-        dtype=np.uint8,
-    )
-    # Loop over all lines and draw them on the blank image.
     for line in lines:
         for x1, y1, x2, y2 in line:
-            cv2.line(line_img, (x1, y1), (x2, y2), color, thickness)
-    return cv2.addWeighted(copied_frame, 0.8, line_img, 1.0, 0.0)
+            cv2.line(copied_frame, (x1, y1), (x2, y2), color, thickness)
+    return copied_frame
