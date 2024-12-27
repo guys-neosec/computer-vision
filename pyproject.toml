@@ -11,6 +11,6 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["ALL"]
-ignore = ["D", "S101", "ANN401", "PLR0133", "FIX002", "TD003"]
+ignore = ["D", "S101", "ANN401", "PLR0133", "FIX002", "TD003", "ERA001"]
 fixable = ["ALL"]
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
