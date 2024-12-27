@@ -1,9 +1,8 @@
-from typing import TypedDict
-
 import cv2
+from pydantic import BaseModel
 
 
-class Metadata(TypedDict):
+class Metadata(BaseModel):
     frame_count: int
     width: int
     height: int

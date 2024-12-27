@@ -3,7 +3,7 @@ from pathlib import Path
 from loguru import logger
 
 from app.assigment1.loader import load_video
-from app.assigment1.pipeline import detect_edges
+from app.assigment1.pipeline.pipeline import detect_edges
 from app.assigment1.player import play_video
 
 PATH = "/Users/gstrauss/Reichman_University/computer-vision"
