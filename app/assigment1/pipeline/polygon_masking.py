@@ -13,8 +13,7 @@ def mask_polygon(frame: GrayScaleArray) -> GrayScaleArray:
     vertices = np.array(
         [
             [0, height],
-            [width * 3 / 8, height / 2],
-            [width * 5 / 8, height / 2],
+            [width * 1 / 2, height * 1 / 2],
             [width, height],
         ],
     )

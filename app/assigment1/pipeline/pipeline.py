@@ -12,7 +12,7 @@ from app.assigment1.custom_types import ThreeChannelArray
 from app.assigment1.pipeline.color_masking import mask_lanes_colors
 from app.assigment1.pipeline.line_drawer import draw_lines
 from app.assigment1.pipeline.polygon_masking import mask_polygon
-from app.assigment1.utilities import extract_metadata
+from app.assigment1.utilities import extract_metadata, progressbar
 
 OUTPUT_FORMAT = "mp4v"
 
@@ -27,7 +27,7 @@ def detect_edges(video: cv2.VideoCapture, path: Path) -> Path:
         fps,
         (width, height),
     )
-
+    progress_bar = progressbar(metadata.frame_count)
     while (read := video.read())[0]:
         (_, frame) = read
         frame: ThreeChannelArray = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -42,8 +42,8 @@ def detect_edges(video: cv2.VideoCapture, path: Path) -> Path:
             maxLineGap=25,
         )
         new_frame = draw_lines(frame, lines)
-        new_frame_rgb = cv2.cvtColor(new_frame, cv2.COLOR_BGR2RGB)
-        output_video.write(new_frame_rgb)
+        output_video.write(cv2.cvtColor(new_frame, cv2.COLOR_RGB2BGR))
+        progress_bar()
 
     video.release()
     output_video.release()

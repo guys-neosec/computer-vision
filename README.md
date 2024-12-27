@@ -16,14 +16,6 @@
 ## Downloading Videos
 ### Commands
 ```bash
-# Download the video from 1434 seconds (23:54) to 1550 seconds
-yt-dlp https://www.youtube.com/watch?v=eoXguTDnnHM --download-sections "*1434-1550" -f best -o "input.mp4"
+# Download the video from 3124 seconds (52:04) to 1 minutes later seconds
+yt-dlp https://www.youtube.com/watch?v=eoXguTDnnHM --download-sections "*3124-3184" -f 137  -o "input.mp4"
 ```
-### Parameters Explanation
-1. `-ss` 1434: Specifies the start time in seconds (1434 seconds = 23 minutes 54 seconds).
-2. `-to` 1550: Specifies the end time in seconds (1550 seconds = 25 minutes 50 seconds).
-3. `-i`: Input file or URL.
-4. `$(youtube-dl -f best -g URL)`: Fetches the direct video URL using youtube-dl. Replace URL with the YouTube video link.
-5. `-c:v libx264`: Encodes the video using the H.264 codec.
-6. `-c:a mp3`: Encodes the audio using MP3 codec (to ensure AVI compatibility).
-7. `output.avi`: The output file name in AVI format.
