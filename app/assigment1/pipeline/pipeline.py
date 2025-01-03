@@ -15,7 +15,7 @@ from app.assigment1.loader import load_video
 from app.assigment1.pipeline.my_pipeline import draw_lanes_on_frame
 from app.assigment1.utilities import extract_metadata, progressbar
 
-OUTPUT_FORMAT = "mp4v"
+OUTPUT_FORMAT = "avc1"
 TRESHOLD = 0.3
 
 
@@ -368,7 +368,7 @@ class Pipeline:
         polygon = np.array(
             [
                 [
-                    (int(width * 0.1), height),  # Bottom-left
+                    (int(width * 0.3), height),  # Bottom-left
                     (int(width * 0.45), int(height * 0.6)),  # Top-left
                     (int(width * 0.55), int(height * 0.6)),  # Top-right
                     (int(width * 0.9), height),  # Bottom-right
