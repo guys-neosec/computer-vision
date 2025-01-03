@@ -45,7 +45,9 @@ class Pipeline:
         # mask = self._area_of_interest_mask()
         for frame in self._get_frames():
             isolated_lane_colors = self._isolate_color_lanes(frame)
-            output_video.write(cv2.cvtColor(isolated_lane_colors, cv2.COLOR_RGB2BGR))
+            process_frame = self._process_for_canny(isolated_lane_colors)
+
+            output_video.write(cv2.cvtColor(process_frame, cv2.COLOR_RGB2BGR))
             progress_bar()
 
     def _get_frames(self) -> Iterable[RBGFrame]:
@@ -76,6 +78,15 @@ class Pipeline:
         color_isolated = cv2.bitwise_and(hsv_frame, hsv_frame, mask=combined_mask)
 
         return cv2.cvtColor(color_isolated, cv2.COLOR_HSV2RGB)
+
+    @staticmethod
+    def _process_for_canny(frame: RBGFrame) -> GrayScaleFrame:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Define a kernel size for Gaussian smoothing
+        kernel_size = 5
+
+        return cv2.GaussianBlur(gray, (kernel_size, kernel_size), 0)
 
     def _area_of_interest_mask(self) -> GrayScaleFrame:
         height, width = self.height, self.width
