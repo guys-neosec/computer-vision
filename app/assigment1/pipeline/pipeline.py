@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 from app.assigment1.custom_types import GrayScaleFrame, Line, RBGFrame
 from app.assigment1.loader import load_video
-from app.assigment1.pipeline.my_pipeline import draw_lanes_on_frame
 from app.assigment1.utilities import extract_metadata, progressbar
 
 OUTPUT_FORMAT = "avc1"
@@ -101,12 +100,11 @@ class Pipeline:
             )
 
             # =============== STEP 6: Draw Final Lanes ===============
-            annotated_frame = draw_lanes_on_frame(
+            annotated_frame = self._draw_lanes_on_frame(
                 frame,
                 smoothed_left_line,
                 smoothed_right_line,
                 fill_color=(0, 255, 0),  # Optional fill color for area between lanes
-                draw_lane_area=True,
             )
             debug_text = (
                 f"Left Slope: {left_slope:.2f}"
@@ -381,3 +379,54 @@ class Pipeline:
         cv2.fillPoly(mask, polygon, [255])
 
         return mask
+
+    @staticmethod
+    def _draw_lanes_on_frame(
+        frame: RBGFrame,
+        left_lane: Line,
+        right_lane: Line,
+        thickness: int = 8,
+        fill_color: list | None = None,
+    ) -> RBGFrame:
+        """
+        Draw left and right lanes onto the frame.
+        Optionally fill the area in between lanes.
+        """
+        overlay = frame.copy()
+        color = (255, 0, 0)
+
+        # Draw the lane lines
+        if left_lane is not None:
+            cv2.line(
+                overlay,
+                (left_lane[0], left_lane[1]),
+                (left_lane[2], left_lane[3]),
+                color,
+                thickness,
+            )
+        if right_lane is not None:
+            cv2.line(
+                overlay,
+                (right_lane[0], right_lane[1]),
+                (right_lane[2], right_lane[3]),
+                color,
+                thickness,
+            )
+
+        if (left_lane is not None) and (right_lane is not None):
+            pts = np.array(
+                [
+                    [left_lane[0], left_lane[1]],
+                    [left_lane[2], left_lane[3]],
+                    [right_lane[2], right_lane[3]],
+                    [right_lane[0], right_lane[1]],
+                ],
+                dtype=np.int32,
+            )
+
+            cv2.fillPoly(overlay, [pts], fill_color)
+
+        # Combine overlay with original using some transparency
+        alpha = 0.4
+
+        return cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
