@@ -337,7 +337,7 @@ class Pipeline:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # Define a kernel size for Gaussian smoothing
-        kernel_size = 5
+        kernel_size = 9
 
         return cv2.GaussianBlur(gray, (kernel_size, kernel_size), 0)
 
@@ -368,7 +368,7 @@ class Pipeline:
         polygon = np.array(
             [
                 [
-                    (int(width * 0.3), height),  # Bottom-left
+                    (int(width * 0.25), height),  # Bottom-left
                     (int(width * 0.45), int(height * 0.6)),  # Top-left
                     (int(width * 0.55), int(height * 0.6)),  # Top-right
                     (int(width * 0.9), height),  # Bottom-right
