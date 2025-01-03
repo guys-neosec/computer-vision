@@ -1,10 +1,10 @@
 import cv2
 import numpy as np
 
-from app.assigment1.custom_types import GrayScaleArray
+from app.assigment1.custom_types import GrayScaleFrame
 
 
-def mask_polygon(frame: GrayScaleArray) -> GrayScaleArray:
+def mask_polygon(frame: GrayScaleFrame) -> GrayScaleFrame:
     (
         height,
         width,
