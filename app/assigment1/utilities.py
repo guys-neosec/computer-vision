@@ -31,7 +31,7 @@ def progressbar(
     start = time.time()  # time estimate start
     progress = 0.1
 
-    def advance() -> None:
+    def advance() -> float:
         nonlocal progress
         x = int(size * progress / count)
         # time estimate calculation and string
@@ -46,5 +46,6 @@ def progressbar(
             flush=True,
         )
         progress += 1
+        return progress
 
     return advance

@@ -69,11 +69,11 @@ class Pipeline:
             avg_right_line = self._average_lines(right_lines)
             # print(avg_left_line)
             # print(avg_right_line)
-            if abs(right_slope - 0.6) >= TRESHOLD and abs(left_slope + 0.9) < TRESHOLD:
+            if abs(right_slope - 0.6) >= TRESHOLD > abs(left_slope + 0.9):
                 avg_right_line = self.right_valid_line
             else:
                 self.right_valid_line = avg_right_line
-            if abs(right_slope - 0.6) < TRESHOLD and abs(left_slope + 0.9) >= TRESHOLD:
+            if abs(right_slope - 0.6) < TRESHOLD <= abs(left_slope + 0.9):
                 avg_left_line = self.left_valid_line
             else:
                 self.left_valid_line = avg_left_line
@@ -185,7 +185,10 @@ class Pipeline:
             )
 
             output_video.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
-            progress_bar()
+            count = progress_bar()
+            if int(count) % 250 == 0:
+                # Resetting lanes history
+                self.lanes_history = LanesHistory()
 
     def _get_frames(self) -> Iterable[RBGFrame]:
         logger.debug("Iterating through video frames")
@@ -366,7 +369,7 @@ class Pipeline:
         polygon = np.array(
             [
                 [
-                    (int(width * 0.25), height),  # Bottom-left
+                    (int(width * 0.2), height),  # Bottom-left
                     (int(width * 0.45), int(height * 0.6)),  # Top-left
                     (int(width * 0.55), int(height * 0.6)),  # Top-right
                     (int(width * 0.9), height),  # Bottom-right
