@@ -79,17 +79,16 @@ class Pipeline:
             else:
                 self.left_valid_line = avg_left_line
 
-            frame_height = frame.shape[0]
-            roi_top = 435  # Example top limit for ROI
+            roi_top = 700  # Example top limit for ROI
             extended_left_line = self._extend_line_to_full_height(
                 avg_left_line,
                 roi_top,
-                frame_height,
+                self.height,
             )
             extended_right_line = self._extend_line_to_full_height(
                 avg_right_line,
                 roi_top,
-                frame_height,
+                self.height,
             )
 
             smoothed_left_line = self._smooth_line(

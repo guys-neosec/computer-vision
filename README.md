@@ -17,5 +17,5 @@
 ### Commands
 ```bash
 # Download the video from 3124 seconds (52:04) to 1 minutes later seconds
-yt-dlp https://www.youtube.com/watch?v=eoXguTDnnHM --download-sections "*3124-3184" -f 137  -o "input.mp4"
+yt-dlp https://www.youtube.com/watch\?v\=6RPU08WoaxE  --download-sections "*135-200" -f 399  -o "input.mp4"
 ```
