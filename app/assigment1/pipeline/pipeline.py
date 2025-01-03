@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.assigment1.custom_types import GrayScaleFrame, Line, RBGFrame
 from app.assigment1.loader import load_video
+from app.assigment1.pipeline.proximity_detection import detect_proximity
 from app.assigment1.utilities import extract_metadata, progressbar
 
 OUTPUT_FORMAT = "avc1"
@@ -47,142 +48,143 @@ class Pipeline:
         progress_bar = progressbar(self.frame_count)
         mask = self._area_of_interest_mask()
         for frame in self._get_frames():
-            isolated_lane_colors = self._isolate_color_lanes(frame)
-            blur_gray = self._process_for_canny(isolated_lane_colors)
-            edges = cv2.Canny(blur_gray, 50, 150)
-            roi_edges = cv2.bitwise_and(edges, mask)
-            lines = self._hough_transform(roi_edges)
-
-            if lines is None:
-                output_video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-                continue
-
-            left_lines, right_lines = self._separate_lines(lines)
-            left_slope = self._calculate_average_slope(left_lines)
-            if not left_slope:
-                left_slope = -1.1
-            right_slope = self._calculate_average_slope(right_lines)
-            if not right_slope:
-                right_slope = 0.6
-
-            avg_left_line = self._average_lines(left_lines)
-            avg_right_line = self._average_lines(right_lines)
-            # print(avg_left_line)
-            # print(avg_right_line)
-            if abs(right_slope - 0.6) >= TRESHOLD > abs(left_slope + 0.9):
-                avg_right_line = self.right_valid_line
-            else:
-                self.right_valid_line = avg_right_line
-            if abs(right_slope - 0.6) < TRESHOLD <= abs(left_slope + 0.9):
-                avg_left_line = self.left_valid_line
-            else:
-                self.left_valid_line = avg_left_line
-
-            roi_top = 700  # Example top limit for ROI
-            extended_left_line = self._extend_line_to_full_height(
-                avg_left_line,
-                roi_top,
-                self.height,
-            )
-            extended_right_line = self._extend_line_to_full_height(
-                avg_right_line,
-                roi_top,
-                self.height,
-            )
-
-            smoothed_left_line = self._smooth_line(
-                extended_left_line,
-                self.lanes_history.left,
-            )
-            smoothed_right_line = self._smooth_line(
-                extended_right_line,
-                self.lanes_history.right,
-            )
-
-            # =============== STEP 6: Draw Final Lanes ===============
-            annotated_frame = self._draw_lanes_on_frame(
-                frame,
-                smoothed_left_line,
-                smoothed_right_line,
-                fill_color=(0, 255, 0),  # Optional fill color for area between lanes
-            )
-            debug_text = (
-                f"Left Slope: {left_slope:.2f}"
-                if left_slope is not None
-                else "Left Slope: None"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
-
-            debug_text = (
-                f"Right Slope: {right_slope:.2f}"
-                if right_slope is not None
-                else "Right Slope: None"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 100),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
-
-            debug_text = (
-                "move lane"
-                if abs(right_slope - 0.6) >= TRESHOLD
-                and abs(left_slope + 0.9) >= TRESHOLD
-                else "same lane"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 150),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
-
-            debug_text = (
-                "right error"
-                if abs(right_slope - 0.6) >= TRESHOLD
-                and abs(left_slope + 0.9) < TRESHOLD
-                else "right okay"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 200),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
-
-            debug_text = (
-                "left error"
-                if abs(right_slope - 0.6) < TRESHOLD
-                and abs(left_slope + 0.9) >= TRESHOLD
-                else "left okay"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 250),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
+            annotated_frame = detect_proximity(frame)
+            # isolated_lane_colors = self._isolate_color_lanes(frame)
+            # blur_gray = self._process_for_canny(isolated_lane_colors)
+            # edges = cv2.Canny(blur_gray, 50, 150)
+            # roi_edges = cv2.bitwise_and(edges, mask)
+            # lines = self._hough_transform(roi_edges)
+            #
+            # if lines is None:
+            #     output_video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            #     continue
+            #
+            # left_lines, right_lines = self._separate_lines(lines)
+            # left_slope = self._calculate_average_slope(left_lines)
+            # if not left_slope:
+            #     left_slope = -1.1
+            # right_slope = self._calculate_average_slope(right_lines)
+            # if not right_slope:
+            #     right_slope = 0.6
+            #
+            # avg_left_line = self._average_lines(left_lines)
+            # avg_right_line = self._average_lines(right_lines)
+            # # print(avg_left_line)
+            # # print(avg_right_line)
+            # if abs(right_slope - 0.6) >= TRESHOLD > abs(left_slope + 0.9):
+            #     avg_right_line = self.right_valid_line
+            # else:
+            #     self.right_valid_line = avg_right_line
+            # if abs(right_slope - 0.6) < TRESHOLD <= abs(left_slope + 0.9):
+            #     avg_left_line = self.left_valid_line
+            # else:
+            #     self.left_valid_line = avg_left_line
+            #
+            # roi_top = 700  # Example top limit for ROI
+            # extended_left_line = self._extend_line_to_full_height(
+            #     avg_left_line,
+            #     roi_top,
+            #     self.height,
+            # )
+            # extended_right_line = self._extend_line_to_full_height(
+            #     avg_right_line,
+            #     roi_top,
+            #     self.height,
+            # )
+            #
+            # smoothed_left_line = self._smooth_line(
+            #     extended_left_line,
+            #     self.lanes_history.left,
+            # )
+            # smoothed_right_line = self._smooth_line(
+            #     extended_right_line,
+            #     self.lanes_history.right,
+            # )
+            #
+            # # =============== STEP 6: Draw Final Lanes ===============
+            # annotated_frame = self._draw_lanes_on_frame(
+            #     frame,
+            #     smoothed_left_line,
+            #     smoothed_right_line,
+            #     fill_color=(0, 255, 0),  # Optional fill color for area between lanes
+            # )
+            # debug_text = (
+            #     f"Left Slope: {left_slope:.2f}"
+            #     if left_slope is not None
+            #     else "Left Slope: None"
+            # )
+            # cv2.putText(
+            #     annotated_frame,
+            #     debug_text,
+            #     (50, 50),
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     0.8,
+            #     (255, 255, 255),
+            #     2,
+            # )
+            #
+            # debug_text = (
+            #     f"Right Slope: {right_slope:.2f}"
+            #     if right_slope is not None
+            #     else "Right Slope: None"
+            # )
+            # cv2.putText(
+            #     annotated_frame,
+            #     debug_text,
+            #     (50, 100),
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     0.8,
+            #     (255, 255, 255),
+            #     2,
+            # )
+            #
+            # debug_text = (
+            #     "move lane"
+            #     if abs(right_slope - 0.6) >= TRESHOLD
+            #     and abs(left_slope + 0.9) >= TRESHOLD
+            #     else "same lane"
+            # )
+            # cv2.putText(
+            #     annotated_frame,
+            #     debug_text,
+            #     (50, 150),
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     0.8,
+            #     (255, 255, 255),
+            #     2,
+            # )
+            #
+            # debug_text = (
+            #     "right error"
+            #     if abs(right_slope - 0.6) >= TRESHOLD
+            #     and abs(left_slope + 0.9) < TRESHOLD
+            #     else "right okay"
+            # )
+            # cv2.putText(
+            #     annotated_frame,
+            #     debug_text,
+            #     (50, 200),
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     0.8,
+            #     (255, 255, 255),
+            #     2,
+            # )
+            #
+            # debug_text = (
+            #     "left error"
+            #     if abs(right_slope - 0.6) < TRESHOLD
+            #     and abs(left_slope + 0.9) >= TRESHOLD
+            #     else "left okay"
+            # )
+            # cv2.putText(
+            #     annotated_frame,
+            #     debug_text,
+            #     (50, 250),
+            #     cv2.FONT_HERSHEY_SIMPLEX,
+            #     0.8,
+            #     (255, 255, 255),
+            #     2,
+            # )
 
             output_video.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
             count = progress_bar()
