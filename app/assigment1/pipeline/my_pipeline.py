@@ -34,7 +34,7 @@ def isolate_lane_colors(image: np.ndarray) -> np.ndarray:
     # cv2.imshow("White Mask", white_mask)
     # cv2.imshow("Combined Mask", combined_mask)
 
-    cv2.waitKey(0)
+    # cv2.waitKey(0)
 
     return color_isolated, combined_mask
 
@@ -409,8 +409,8 @@ def process_video(input_filename: str, output_filename: str):
 def main():
     # 1. Load your test image (BGR format by default with cv2.imread)
     image_path = Path("/home/aweinsto/projects/computer-vision/image.png")
-    input_filename = "/home/aweinsto/projects/computer-vision/short_input.mp4"
-    output_filename = "/home/aweinsto/projects/computer-vision/output.mp4"
+    input_filename = "/Users/gstrauss/Reichman_University/computer-vision/short_input.mp4"
+    output_filename = "/Users/gstrauss/Reichman_University/computer-vision/short_output.mp4"
     process_video(input_filename, output_filename)
 
 
