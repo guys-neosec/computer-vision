@@ -35,14 +35,14 @@ def detect_proximity(frame: RBGFrame):
     green_mask = cv2.inRange(frame_hsv, lower_green, upper_green)
     # Invert the mask to remove yellow regions
     non_yellow_mask = cv2.bitwise_not(yellow_mask)
-    dilation_kernel = np.ones((3, 3), np.uint8)
-    eroded_non_yellow_mask = cv2.erode(non_yellow_mask, dilation_kernel, iterations=5)
+    dilation_kernel = np.ones((5, 5), np.uint8)
+    eroded_non_yellow_mask = cv2.erode(non_yellow_mask, dilation_kernel, iterations=2)
 
     # Apply the non-yellow mask to the frame
     filtered_frame = cv2.bitwise_and(
         bright_colors_frame,
         bright_colors_frame,
-        mask=non_yellow_mask,
+        mask=eroded_non_yellow_mask,
     )
 
     gray_filtered_frame = cv2.cvtColor(filtered_frame, cv2.COLOR_BGR2GRAY)
@@ -51,28 +51,79 @@ def detect_proximity(frame: RBGFrame):
         cv2.MORPH_OPEN,
         dilation_kernel,
     )
-    edges = cv2.Canny(gray_filtered_frame, 50, 180)
+    height, width = gray_filtered_frame.shape
+    src_points = np.float32(
+        [
+            [0, height],  # Bottom-left
+            [width, height],  # Bottom-right
+            [int(0.35 * width), int(0.65 * height)],  # Top-left (near vanishing point)
+            [int(0.65 * width), int(0.65 * height)],  # Top-right (near vanishing point)
+        ],
+    )
+
+    # Desired rectangle for the top-down (2D) view
+    dst_points = np.float32(
+        [
+            [0, height],  # Bottom-left
+            [width, height],  # Bottom-right
+            [0, 0],  # Top-left
+            [width, 0],  # Top-right
+        ],
+    )
+
+    # Compute the perspective transformation matrix
+    perspective_matrix = cv2.getPerspectiveTransform(src_points, dst_points)
+    M_inv = cv2.getPerspectiveTransform(dst_points, src_points)
+
+    # Apply perspective warp
+    warped_image = cv2.warpPerspective(
+        gray_filtered_frame,
+        perspective_matrix,
+        (width, height),
+    )
+
+    edges = cv2.Canny(warped_image, 50, 180)
     lines = cv2.HoughLinesP(
         edges,
         rho=1,
         theta=np.pi / 180,
-        threshold=30,
-        minLineLength=10,
+        threshold=50,
+        minLineLength=20,
         maxLineGap=5,
     )
 
     # Hough Line Transform to detect lines
 
     results = annotated_frame.copy()
-
+    possible_lines = []
     if lines is not None:
         for line in lines:
             x1, y1, x2, y2 = line[0]
+            cv2.line(warped_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            points_array = np.array([(x1, y1, x2, y2)], dtype="float32").reshape(
+                -1,
+                1,
+                2,
+            )
+            transformed_points = cv2.perspectiveTransform(points_array, M_inv)
+            start_point, end_point = transformed_points.reshape(-1, 2)
+            x1, y1 = int(start_point[0]), int(start_point[1])
+            x2, y2 = int(end_point[0]), int(end_point[1])
+            line_distance = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
+            if line_distance > 30:
+                continue
             angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
-
+            slope = (y2 - y1) / (x2 - x1 + 1e-10)
             # Only draw horizontal lines (close to 0° or 180°)
-            if angle < 10 or angle > 170:
-                cv2.line(results, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            if -0.5 < slope < 1:
+                possible_lines.append((x1, y1, x2, y2))
+    for x1, y1, x2, y2 in possible_lines:
+        if abs(y1 - y2) > 10:
+            continue
+        if abs(x1 - x2) < 10:
+            continue
+        cv2.line(results, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
     # cntrs = cv2.findContours(gray_filtered_frame, cv2.RETR_EXTERNAL,
     #                          cv2.CHAIN_APPROX_SIMPLE)
     # cntrs = cntrs[0] if len(cntrs) == 2 else cntrs[1]
