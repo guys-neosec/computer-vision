@@ -9,8 +9,11 @@ FRAME_COUNT = 0
 
 def crosswalk(frame: RBGFrame):
     global HISTORY, FRAME_COUNT
-    # frame = cv2.imread("/Users/gstrauss/Reichman_University/computer-vision/app/assigment1/pipeline/pic_with_car.png")
+    # frame = cv2.imread("/Users/gstrauss/Reichman_University/computer-vision/app/assigment1/pipeline/img_2.png")
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    mask = area_of_interest_mask(frame)
+    masked_frame_gray = cv2.bitwise_and(frame_gray, frame_gray, mask=mask)
+
     for p in [
         "/Users/gstrauss/Reichman_University/computer-vision/app/assigment1/pipeline/car.png",
         "/Users/gstrauss/Reichman_University/computer-vision/app/assigment1/pipeline/car2.png",
@@ -23,7 +26,7 @@ def crosswalk(frame: RBGFrame):
         top_left = max_loc
         h, w = gray_template.shape
         cv2.rectangle(
-            frame_gray,
+            masked_frame_gray,
             top_left,
             (top_left[0] + w, top_left[1] + h),
             (0, 0, 0),
@@ -31,9 +34,6 @@ def crosswalk(frame: RBGFrame):
         )
     # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    annotated_frame = frame.copy()
-    mask = area_of_interest_mask(frame)
-    masked_frame_gray = cv2.bitwise_and(frame_gray, frame_gray, mask=mask)
     # Define HSV range for white color (tolerant range to capture white lines)
     threshold_value = 100  # Pixels brighter than this value are considered "white"
     _, bright_mask = cv2.threshold(
@@ -110,8 +110,8 @@ def crosswalk(frame: RBGFrame):
         edges,
         rho=1,
         theta=np.pi / 180,
-        threshold=50,
-        minLineLength=20,
+        threshold=45,
+        minLineLength=15,
         maxLineGap=5,
     )
 
@@ -236,9 +236,9 @@ def area_of_interest_mask(frame: RBGFrame) -> GrayScaleFrame:
         [
             [
                 (int(width * 0.2), height),  # Bottom-left
-                (int(width * 0.45), int(height * 0.6)),  # Top-left
+                (int(width * 0.5), int(height * 0.6)),  # Top-left
                 (int(width * 0.55), int(height * 0.6)),  # Top-right
-                (int(width * 0.9), height),  # Bottom-right
+                (int(width * 0.7), height),  # Bottom-right
             ],
         ],
         dtype=np.int32,
