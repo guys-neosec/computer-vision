@@ -22,8 +22,13 @@ def crosswalk(frame: RBGFrame):
         _, _, min_loc, max_loc = cv2.minMaxLoc(result)
         top_left = max_loc
         h, w = gray_template.shape
-        cv2.rectangle(frame_gray, top_left, (top_left[0] + w, top_left[1] + h),
-                      (0, 0, 0), -1)
+        cv2.rectangle(
+            frame_gray,
+            top_left,
+            (top_left[0] + w, top_left[1] + h),
+            (0, 0, 0),
+            -1,
+        )
     # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     annotated_frame = frame.copy()
@@ -137,7 +142,6 @@ def crosswalk(frame: RBGFrame):
             if -0.5 < slope < 1:
                 candidate_lines.append((x1, y1, x2, y2))
 
-
     # if len(candidate_lines) == 0 and  4 < len(HISTORY) and FRAME_COUNT < 50:
     #     # Assume we have the history to help up, but up to 250 frames
     #     FRAME_COUNT += 1
@@ -160,12 +164,12 @@ def crosswalk(frame: RBGFrame):
     #     history_min_y += 10
     #     history_max_y += 10
     #     return int(history_min_x), int(history_min_y), int(history_max_x), int(history_max_y)
-    if len(candidate_lines) < 4:
+    if len(candidate_lines) < 5:
         return None
-    min_x = float('inf')
-    min_y = float('inf')
-    max_x = float('-inf')
-    max_y = float('-inf')
+    min_x = float("inf")
+    min_y = float("inf")
+    max_x = float("-inf")
+    max_y = float("-inf")
     y_sum = 0
 
     for _, y1, _, y2 in candidate_lines:
@@ -186,7 +190,7 @@ def crosswalk(frame: RBGFrame):
         max_y = max(max_y, y1, y2)
         # cv2.line(results, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-    if 1700 < abs(min_x - max_y) * abs(min_y - max_y) < 7000:
+    if 2000 < abs(min_x - max_y) * abs(min_y - max_y) < 7000:
         FRAME_COUNT = 0
         if len(HISTORY) > 6:
             HISTORY.pop(0)
@@ -215,8 +219,12 @@ def crosswalk(frame: RBGFrame):
         #                (int(history_max_y) + max_y) // 2),
         #               (0, 255, 0), 2)
 
-        return ((min_x + int(history_min_x)) // 2, (min_y + int(history_min_y)) // 2,
-                (max_x + int(history_max_x)) // 2, (int(history_max_y) + max_y) // 2)
+        return (
+            (min_x + int(history_min_x)) // 2,
+            (min_y + int(history_min_y)) // 2,
+            (max_x + int(history_max_x)) // 2,
+            (int(history_max_y) + max_y) // 2,
+        )
     return None
 
 
