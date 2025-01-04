@@ -3,11 +3,29 @@ import numpy as np
 
 from app.assigment1.custom_types import GrayScaleFrame, RBGFrame
 
+HISTORY = []
+FRAME_COUNT = 0
 
-def detect_proximity(frame: RBGFrame):
-    # frame = cv2.imread("/Users/gstrauss/Reichman_University/computer-vision/app/assigment1/pipeline/img.png")
-    # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+def crosswalk(frame: RBGFrame):
+    global HISTORY, FRAME_COUNT
+    # frame = cv2.imread("/Users/gstrauss/Reichman_University/computer-vision/app/assigment1/pipeline/pic_with_car.png")
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    for p in [
+        "/Users/gstrauss/Reichman_University/computer-vision/app/assigment1/pipeline/car.png",
+        "/Users/gstrauss/Reichman_University/computer-vision/app/assigment1/pipeline/car2.png",
+        "/Users/gstrauss/Reichman_University/computer-vision/app/assigment1/pipeline/rear.png",
+    ]:
+        template = cv2.imread(p)
+        gray_template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        result = cv2.matchTemplate(frame_gray, gray_template, cv2.TM_CCOEFF_NORMED)
+        _, _, min_loc, max_loc = cv2.minMaxLoc(result)
+        top_left = max_loc
+        h, w = gray_template.shape
+        cv2.rectangle(frame_gray, top_left, (top_left[0] + w, top_left[1] + h),
+                      (0, 0, 0), -1)
+    # frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
     annotated_frame = frame.copy()
     mask = area_of_interest_mask(frame)
     masked_frame_gray = cv2.bitwise_and(frame_gray, frame_gray, mask=mask)
@@ -94,8 +112,7 @@ def detect_proximity(frame: RBGFrame):
 
     # Hough Line Transform to detect lines
 
-    results = annotated_frame.copy()
-    possible_lines = []
+    candidate_lines = []
     if lines is not None:
         for line in lines:
             x1, y1, x2, y2 = line[0]
@@ -112,71 +129,95 @@ def detect_proximity(frame: RBGFrame):
             line_distance = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
             if line_distance > 30:
                 continue
-            angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
             slope = (y2 - y1) / (x2 - x1 + 1e-10)
-            # Only draw horizontal lines (close to 0° or 180°)
+            if abs(y1 - y2) > 10:
+                continue
+            if abs(x1 - x2) < 10:
+                continue
             if -0.5 < slope < 1:
-                possible_lines.append((x1, y1, x2, y2))
-    for x1, y1, x2, y2 in possible_lines:
-        if abs(y1 - y2) > 10:
-            continue
-        if abs(x1 - x2) < 10:
-            continue
-        cv2.line(results, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                candidate_lines.append((x1, y1, x2, y2))
 
-    # cntrs = cv2.findContours(gray_filtered_frame, cv2.RETR_EXTERNAL,
-    #                          cv2.CHAIN_APPROX_SIMPLE)
-    # cntrs = cntrs[0] if len(cntrs) == 2 else cntrs[1]
-    # # filter on area
-    # good_contours = []
-    # for c in cntrs:
-    #     x, y, w, h = cv2.boundingRect(c)
-    #     area = cv2.contourArea(c)
-    #     aspect_ratio = w / h
-    #     if 20 < area < 1500 and 1.2 < aspect_ratio < 4:
-    #         cv2.drawContours(results, [c], -1, (0, 255, 0), 1)
-    #         good_contours.append(c)
-    # horizontal_distance_threshold = 50
-    #
-    # # Extract the center (x, y) points of each rectangle
-    # rectangle_centers = [(cv2.boundingRect(c)[0] + cv2.boundingRect(c)[2] // 2,
-    #                       cv2.boundingRect(c)[1] + cv2.boundingRect(c)[3] // 2) for c in
-    #                      good_contours]
-    #
-    # # Sort rectangles by their Y-coordinate (vertical position)
-    # rectangle_centers.sort(key=lambda p: p[1])
-    #
-    # # Group rectangles by rows (lines)
-    # lines = []  # To store groups of aligned rectangles
-    # current_line = [rectangle_centers[0]]
-    #
-    # for i in range(1, len(rectangle_centers)):
-    #     prev_x, prev_y = current_line[-1]
-    #     curr_x, curr_y = rectangle_centers[i]
-    #
-    #     # If the current rectangle is aligned (same row) within a certain distance
-    #     if abs(curr_y - prev_y) < 20 and abs(
-    #             curr_x - prev_x) < horizontal_distance_threshold:
-    #         current_line.append((curr_x, curr_y))
-    #     else:
-    #         if len(current_line) >= 5:  # If a line of 3 or more rectangles is found
-    #             lines.append(current_line)
-    #         current_line = [(curr_x, curr_y)]
-    #
-    # # Add the last line if valid
-    # if len(current_line) >= 5:
-    #     lines.append(current_line)
-    #
-    # # Annotate the detected line of rectangles
-    # for line in lines:
-    #     for (x, y) in line:
-    #         cv2.circle(results, (x, y), 5, (255, 0, 0), -1)
-    #
-    # if len(lines) > 0:
-    #     cv2.putText(results, "Crosswalk Line Detected!", (50, 100),
-    #                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-    return results
+    # if len(candidate_lines) == 0 and  4 < len(HISTORY) and FRAME_COUNT < 50:
+    #     # Assume we have the history to help up, but up to 250 frames
+    #     FRAME_COUNT += 1
+    #     history_min_x, history_min_y = 0, 0
+    #     history_max_x, history_max_y = 0, 0
+    #     total = 0
+    #     for index, history in enumerate(HISTORY, start=1):
+    #         total += index
+    #         history_min_x += index * history[0]
+    #         history_min_y += index * history[1]
+    #         history_max_x += index * history[2]
+    #         history_max_y += index * history[3]
+    #     history_min_x /= total
+    #     history_min_y /= total
+    #     history_max_x /= total
+    #     history_max_y /= total
+    #     # The car the moving, mimic that effect
+    #     history_min_x -= 10
+    #     history_max_x += 10
+    #     history_min_y += 10
+    #     history_max_y += 10
+    #     return int(history_min_x), int(history_min_y), int(history_max_x), int(history_max_y)
+    if len(candidate_lines) < 4:
+        return None
+    min_x = float('inf')
+    min_y = float('inf')
+    max_x = float('-inf')
+    max_y = float('-inf')
+    y_sum = 0
+
+    for _, y1, _, y2 in candidate_lines:
+        y_sum += y1
+        y_sum += y2
+
+    y_avg = y_sum / len(candidate_lines * 2)
+    crosswalk_line = []
+    for x1, y1, x2, y2 in candidate_lines:
+        if abs(y_avg - y1) > 0.1 * height or abs(y_avg - y2) > 0.1 * height:
+            continue
+        crosswalk_line.append((x1, y1, x2, y2))
+
+    for x1, y1, x2, y2 in candidate_lines:
+        min_x = min(min_x, x1, x2)
+        min_y = min(min_y, y1, y2)
+        max_x = max(max_x, x1, x2)
+        max_y = max(max_y, y1, y2)
+        # cv2.line(results, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+    if 1700 < abs(min_x - max_y) * abs(min_y - max_y) < 7000:
+        FRAME_COUNT = 0
+        if len(HISTORY) > 6:
+            HISTORY.pop(0)
+        total = 0
+        history_min_x, history_min_y = 0, 0
+        history_max_x, history_max_y = 0, 0
+        for index, history in enumerate(HISTORY, start=1):
+            total += index
+            history_min_x += index * history[0]
+            history_min_y += index * history[1]
+            history_max_x += index * history[2]
+            history_max_y += index * history[3]
+        if len(HISTORY) == 0:
+            history_min_x, history_min_y = min_x, min_y
+            history_max_x, history_max_y = max_x, max_y
+        else:
+            history_min_x /= total
+            history_min_y /= total
+            history_max_x /= total
+            history_max_y /= total
+        HISTORY.append((min_x, min_y, max_x, max_y))
+        # cv2.rectangle(results,
+        #               ((min_x + int(history_min_x)) // 2,
+        #                (min_y + int(history_min_y)) // 2),
+        #               ((max_x + int(history_max_x)) // 2,
+        #                (int(history_max_y) + max_y) // 2),
+        #               (0, 255, 0), 2)
+
+        return ((min_x + int(history_min_x)) // 2, (min_y + int(history_min_y)) // 2,
+                (max_x + int(history_max_x)) // 2, (int(history_max_y) + max_y) // 2)
+    return None
 
 
 def area_of_interest_mask(frame: RBGFrame) -> GrayScaleFrame:
