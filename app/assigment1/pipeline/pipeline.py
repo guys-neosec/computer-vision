@@ -45,9 +45,12 @@ class Pipeline:
             (self.width, self.height),
         )
         progress_bar = progressbar(self.frame_count)
-        mask = self._area_of_interest_mask()
         for frame in self._get_frames():
-            isolated_lane_colors = self._isolate_color_lanes(frame)
+            corrected_frame = frame.copy()
+            if is_night := self._is_night_frame(frame):
+                corrected_frame = self._night_correction(frame)
+            mask = self._area_of_interest_mask(is_night)
+            isolated_lane_colors = self._isolate_color_lanes(corrected_frame, is_night)
             blur_gray = self._process_for_canny(isolated_lane_colors)
             edges = cv2.Canny(blur_gray, 50, 150)
             roi_edges = cv2.bitwise_and(edges, mask)
@@ -60,10 +63,10 @@ class Pipeline:
             left_lines, right_lines = self._separate_lines(lines)
             left_slope = self._calculate_average_slope(left_lines)
             if not left_slope:
-                left_slope = -1.1
+                left_slope = -1.8 if is_night else 1.1
             right_slope = self._calculate_average_slope(right_lines)
             if not right_slope:
-                right_slope = 0.6
+                right_slope = 0.8 if is_night else 0.6
 
             avg_left_line = self._average_lines(left_lines)
             avg_right_line = self._average_lines(right_lines)
@@ -78,7 +81,7 @@ class Pipeline:
             else:
                 self.left_valid_line = avg_left_line
 
-            roi_top = 700  # Example top limit for ROI
+            roi_top = 800 if is_night else 700
             extended_left_line = self._extend_line_to_full_height(
                 avg_left_line,
                 roi_top,
@@ -199,6 +202,22 @@ class Pipeline:
         self.video.release()
         return
 
+    @staticmethod
+    def _night_correction(frame: RBGFrame, gamma=2) -> RBGFrame:
+        inv_gamma = 1.0 / gamma
+        lookup_table = np.array(
+            [((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)],
+        ).astype("uint8")
+
+        # Apply gamma correction using the lookup table
+        corrected_image = cv2.LUT(frame, lookup_table)
+        kernel_size = 9
+
+        # Smoothing image, noise from correcting
+        return cv2.GaussianBlur(corrected_image, (kernel_size, kernel_size), 0)
+
+        # Display the corrected image
+
     def _separate_lines(self, lines: list[Line]) -> tuple[list[Line], list[Line]]:
         left_lines = []
         right_lines = []
@@ -314,14 +333,25 @@ class Pipeline:
         return np.mean(slopes) if slopes else None
 
     @staticmethod
-    def _isolate_color_lanes(frame: RBGFrame) -> RBGFrame:
+    def _is_night_frame(frame: RBGFrame, threshold=90) -> bool:
+        # Convert to grayscale
+        gray_image = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+
+        # Calculate the average pixel intensity
+        avg_intensity = np.mean(gray_image)
+
+        # Check if the average intensity is below the threshold
+        return avg_intensity < threshold
+
+    @staticmethod
+    def _isolate_color_lanes(frame: RBGFrame, is_night=False) -> RBGFrame:
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
 
         # Define ranges for yellow and white
         lower_yellow = np.array([20, 80, 80])
         upper_yellow = np.array([40, 150, 150])
         lower_white = np.array([0, 0, 120])
-        upper_white = np.array([255, 30, 150])
+        upper_white = np.array([255, 30 if not is_night else 65, 150])
 
         # Create masks for yellow and white
         yellow_mask = cv2.inRange(hsv_frame, lower_yellow, upper_yellow)
@@ -362,7 +392,7 @@ class Pipeline:
             max_line_gap,
         )
 
-    def _area_of_interest_mask(self) -> GrayScaleFrame:
+    def _area_of_interest_mask(self, is_night=False) -> GrayScaleFrame:
         height, width = self.height, self.width
         mask = np.zeros((height, width), dtype=np.uint8)
 
@@ -377,6 +407,19 @@ class Pipeline:
             ],
             dtype=np.int32,
         )
+
+        if is_night:
+            # Different Video, adjusting ROI
+            polygon = np.array(
+                [
+                    [
+                        (int(width * 0.3), height),  # Bottom-left
+                        (int(width * 0.45), int(height * 0.6)),  # Top-left
+                        (int(width * 0.8), height),  # Bottom-right
+                    ],
+                ],
+                dtype=np.int32,
+            )
 
         # Fill polygon with white
         cv2.fillPoly(mask, polygon, [255])
