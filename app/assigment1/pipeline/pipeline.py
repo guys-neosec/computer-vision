@@ -16,7 +16,7 @@ from app.assigment1.utilities import extract_metadata, progressbar
 from app.assigment1.pipeline.my_pipeline import draw_lanes_on_frame
 
 OUTPUT_FORMAT = "mp4v"
-TRESHOLD = 0.4
+TRESHOLD = 0.7
 
 
 class LanesHistory(BaseModel):
@@ -35,11 +35,15 @@ class Pipeline:
         self.frame_count = metadata.frame_count
         self.fps = metadata.fps
         self.lanes_history = LanesHistory()
-        self.left_valid_line = None
-        self.right_valid_line = None
         self.i = 0
         self.move_lane_cooldown = 0
         self.move_lane = True
+        self.right_slope_his = []
+        self.left_slope_his = []
+        self.inter_x = []
+        self.inter_y = []
+        self.right_slope_avg = 0.6
+        self.left_slope_avg = -0.9
 
     def process(self, output_video: Path) -> None:
         output_video = cv2.VideoWriter(
@@ -71,22 +75,12 @@ class Pipeline:
             right_slope = self._calculate_average_slope(right_lines)
             if not right_slope:
                 right_slope = 0.6
-
+            right_slope = self._average_slope(right_slope,self.right_slope_his)
+            left_slope = self._average_slope(left_slope,self.left_slope_his)
             avg_left_line = self._average_lines(left_lines)
             avg_right_line = self._average_lines(right_lines)
-            # print(avg_left_line)
-            # print(avg_right_line)
-            if abs(right_slope - 0.6) >= TRESHOLD and abs(left_slope + 0.9) < TRESHOLD:
-                avg_right_line = self.right_valid_line
-            else:
-                self.right_valid_line = avg_right_line
-            if abs(right_slope - 0.6) < TRESHOLD and abs(left_slope + 0.9) >= TRESHOLD:
-                avg_left_line = self.left_valid_line
-            else:
-                self.left_valid_line = avg_left_line
-
             frame_height = frame.shape[0]
-            roi_top = 435  # Example top limit for ROI
+            roi_top = 435
             extended_left_line = self._extend_line_to_full_height(
                 avg_left_line,
                 roi_top,
@@ -110,24 +104,50 @@ class Pipeline:
             # =============== STEP 6: Draw Final Lanes ===============
             if self.move_lane_cooldown > 0 :
                 self.move_lane_cooldown -=1
-            else:
-                self.move_lane  =  True if (abs(right_slope - 0.6) >= TRESHOLD \
-                    and abs(left_slope + 0.9) >= TRESHOLD) or \
-                    abs(right_slope - 0.6) > 2 or abs(left_slope +0.9) >2 else False
-                if self.move_lane:
-                    self.move_lane_cooldown = 30
-                    print(left_slope)
-                    print(right_slope)
-                    cv2.imshow("Corrected Frame", frame)
-                    cv2.waitKey(0)  # Wait for a key press
-                    cv2.destroyAllWindows()
+                x,y = self.calculate_intersection(smoothed_left_line,smoothed_right_line)
+                x = self._average_slope(x,self.inter_x)
+                hold_x.append(x)
 
-            if self.move_lane:
+                if len(hold_x) == 35:
+                    count =0
+                    print(hold_x)
+                    for i in range(len(hold_x)-1):
+                        if hold_x[i]>hold_x[i+1]:
+                            count+=1
+                        else:
+                            count-=1
+                    if max(hold_x)-min(hold_x) < 40:
+                        txt = None
+                    if count >0:
+                        txt = "left"
+                    else:
+                        txt = "right"
+            else:
+                self.move_lane  =  True if (abs(right_slope - self.right_slope_avg) >= TRESHOLD \
+                    and abs(left_slope + self.left_slope_avg) >= TRESHOLD) or \
+                    abs(right_slope - self.right_slope_avg) > 4 or abs(left_slope + self.left_slope_avg) > 4 else False
+
+                if self.move_lane:
+                    print((abs(right_slope - self.right_slope_avg) >= TRESHOLD \
+                    and abs(left_slope + self.left_slope_avg) >= TRESHOLD))
+                    print((abs(right_slope - self.right_slope_avg), abs(left_slope + self.left_slope_avg) ))
+                    print(abs(right_slope - self.right_slope_avg) > 4)
+                    print(abs(right_slope - self.right_slope_avg) )
+                    print( abs(left_slope + self.left_slope_avg) > 4)
+                    print( abs(left_slope + self.left_slope_avg) )
+                    txt = None
+                    self.move_lane_cooldown = 70
+                    self.inter_x = []
+                    self.inter_y = []
+                    self.count_frames_since_change = 0
+                    hold_x = []
+
+            if self.move_lane and txt:
                 # Annotate the frame with "Moving Lane" in big red text
                 annotated_frame = frame.copy()  # Copy the frame to annotate
                 cv2.putText(
                     annotated_frame,
-                    "MOVING LANE",  # Text to display
+                    txt, # Text to display
                     (int(self.width / 4), int(self.height / 2)),  # Position (centered horizontally)
                     cv2.FONT_HERSHEY_SIMPLEX,  # Font style
                     2.0,  # Font size
@@ -173,82 +193,10 @@ class Pipeline:
                 (255, 255, 255),
                 2,
             )
+       
 
-
-            debug_text = (
-                "right error"
-                if abs(right_slope - 0.6) >= TRESHOLD
-                and abs(left_slope + 0.9) < TRESHOLD
-                else "right okay"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 200),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
-
-            debug_text = (
-                "left error"
-                if abs(right_slope - 0.6) < TRESHOLD
-                and abs(left_slope + 0.9) >= TRESHOLD
-                else "left okay"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 250),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
-
-            output_video.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
-            progress_bar()
-            continue
-            # if self.i % 300 == 0:
-            #     cv2.imshow("Corrected Frame", corrected_frame)
-            #     cv2.imshow("Isolated Lane Colors", isolated_lane_colors)
-            #     cv2.imshow("Binary Frame (Canny)", binary_frame)
-            #     cv2.imshow("ROI Binary Frame", roi_binary_frame)
-            #     cv2.waitKey(0)  # Wait for a key press
-            #     cv2.destroyAllWindows()
-            # self.i +=1
-            # Fit polynomials to detected lanes
-            left_fit, right_fit = self._fit_polynomial(roi_binary_frame)
-
-            # Draw the lanes on the original frame
-            annotated_frame = self._draw_lane_overlay(frame, left_fit, right_fit)
-
-            # Add debugging text (optional)
-            if left_fit is not None:
-                cv2.putText(
-                    annotated_frame,
-                    f"Left Curve: {left_fit[0]:.4f}x^2 + {left_fit[1]:.4f}x + {left_fit[2]:.4f}",
-                    (50, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (255, 255, 255),
-                    2,
-                )
-            if right_fit is not None:
-                cv2.putText(
-                    annotated_frame,
-                    f"Right Curve: {right_fit[0]:.4f}x^2 + {right_fit[1]:.4f}x + {right_fit[2]:.4f}",
-                    (50, 100),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (255, 255, 255),
-                    2,
-                )
-
-            output_video.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
-            progress_bar()
-
+        output_video.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
+        progress_bar()
         output_video.release()
 
 
@@ -459,8 +407,8 @@ class Pipeline:
             [
                 [
                     (int(width * 0.2), height*0.8),  # Bottom-left
-                    (int(width * 0.43), int(height * 0.55)),  # Top-left
-                    (int(width * 0.47), int(height * 0.55)),  # Top-right
+                    (int(width * 0.35), int(height * 0.55)),  # Top-left
+                    (int(width * 0.55), int(height * 0.55)),  # Top-right
                     (int(width * 0.8), height*0.8),  # Bottom-right
                 ],
             ],
@@ -486,141 +434,76 @@ class Pipeline:
         return mask
 
     @staticmethod
-    def _draw_lanes_on_frame(
-        frame: RBGFrame,
-        left_lane: Line,
-        right_lane: Line,
-        thickness: int = 8,
-        fill_color: list | None = None,
-    ) -> RBGFrame:
-        """
-        Draw left and right lanes onto the frame.
-        Optionally fill the area in between lanes.
-        """
-        overlay = frame.copy()
-        color = (255, 0, 0)
+    def _average_slope(
+        current_slope: float,
+        history: list[float],
+        max_history: int = 10,
+    ) -> None | float:
+        history.append(current_slope)
 
-        # Draw the lane lines
-        if left_lane is not None:
-            cv2.line(
-                overlay,
-                (left_lane[0], left_lane[1]),
-                (left_lane[2], left_lane[3]),
-                color,
-                thickness,
-            )
-        if right_lane is not None:
-            cv2.line(
-                overlay,
-                (right_lane[0], right_lane[1]),
-                (right_lane[2], right_lane[3]),
-                color,
-                thickness,
-            )
+        if len(history) > max_history:
+            history.pop(0)
 
-        if (left_lane is not None) and (right_lane is not None):
-            pts = np.array(
-                [
-                    [left_lane[0], left_lane[1]],
-                    [left_lane[2], left_lane[3]],
-                    [right_lane[2], right_lane[3]],
-                    [right_lane[0], right_lane[1]],
-                ],
-                dtype=np.int32,
-            )
+        # If we have no lines in history, return None
+        if len(history) == 0:
+            return None
 
-            cv2.fillPoly(overlay, [pts], fill_color)
+        return np.mean(history)
 
-        # Combine overlay with original using some transparency
-        alpha = 0.4
+    def calculate_intersection(self, left_line: tuple, right_line: tuple) -> tuple[float, float]:
+        # Unpack the lines
+        x1_left, y1_left, x2_left, y2_left = left_line
+        x1_right, y1_right, x2_right, y2_right = right_line
 
-        return cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+        # Calculate the slopes (m1 and m2)
+        m1 = (y2_left - y1_left) / (x2_left - x1_left) if x2_left != x1_left else None
+        m2 = (y2_right - y1_right) / (x2_right - x1_right) if x2_right != x1_right else None
 
-    def _find_lane_pixels(self, binary_frame: np.ndarray):
-        """
-        Detect lane pixels using a sliding window approach.
-        Returns the pixel positions for left and right lanes.
-        """
-        histogram = np.sum(binary_frame[binary_frame.shape[0] // 2:, :], axis=0)
+        # Handle vertical lines
+        if m1 is None:  # Left line is vertical
+            x = x1_left
+            y = m2 * x + (y1_right - m2 * x1_right)
+        elif m2 is None:  # Right line is vertical
+            x = x1_right
+            y = m1 * x + (y1_left - m1 * x1_left)
+        else:
+            # Calculate the y-intercepts (b1 and b2)
+            b1 = y1_left - m1 * x1_left
+            b2 = y1_right - m2 * x1_right
 
-        midpoint = int(histogram.shape[0] / 2)
-        leftx_base = np.argmax(histogram[:midpoint])
-        rightx_base = np.argmax(histogram[midpoint:]) + midpoint
+            # Calculate the intersection point
+            x = (b2 - b1) / (m1 - m2)
+            y = m1 * x + b1
 
-        nwindows = 9
-        margin = 100
-        minpix = 50
+        return x, y
 
-        window_height = int(binary_frame.shape[0] / nwindows)
-        nonzero = binary_frame.nonzero()
-        nonzeroy = np.array(nonzero[0])
-        nonzerox = np.array(nonzero[1])
+    def perspective_warp(self, img,
+                dst_size=(1280,720),
+                src=np.float32([(0.43,0.65),(0.58,0.65),(0.1,1),(1,1)]),
+                dst=np.float32([(0,0), (1, 0), (0,1), (1,1)])):
+        img_size = np.float32([(img.shape[1],img.shape[0])])
+        src = src* img_size
+        dst = dst * np.float32(dst_size)
+        M = cv2.getPerspectiveTransform(src, dst)
+        warped = cv2.warpPerspective(img, M, dst_size)
+        return warped
 
-        leftx_current = leftx_base
-        rightx_current = rightx_base
+    def inv_perspective_warp(self, img,
+                     dst_size=(1280,720),
+                     src=np.float32([(0,0), (1, 0), (0,1), (1,1)]),
+                     dst=np.float32([(0.43,0.65),(0.58,0.65),(0.1,1),(1,1)])):
+        img_size = np.float32([(img.shape[1],img.shape[0])])
+        src = src* img_size
+        # For destination points, I'm arbitrarily choosing some points to be
+        # a nice fit for displaying our warped result
+        # again, not exact, but close enough for our purposes
+        dst = dst * np.float32(dst_size)
+        # Given src and dst points, calculate the perspective transform matrix
+        M = cv2.getPerspectiveTransform(src, dst)
+        # Warp the image using OpenCV warpPerspective()
+        warped = cv2.warpPerspective(img, M, dst_size)
+        return warped
 
-        left_lane_inds = []
-        right_lane_inds = []
-
-        for window in range(nwindows):
-            win_y_low = binary_frame.shape[0] - (window + 1) * window_height
-            win_y_high = binary_frame.shape[0] - window * window_height
-
-            win_xleft_low = leftx_current - margin
-            win_xleft_high = leftx_current + margin
-            win_xright_low = rightx_current - margin
-            win_xright_high = rightx_current + margin
-
-            good_left_inds = ((nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high) &
-                            (nonzeroy >= win_y_low) & (nonzeroy < win_y_high)).nonzero()[0]
-            good_right_inds = ((nonzerox >= win_xright_low) & (nonzerox < win_xright_high) &
-                            (nonzeroy >= win_y_low) & (nonzeroy < win_y_high)).nonzero()[0]
-
-            left_lane_inds.append(good_left_inds)
-            right_lane_inds.append(good_right_inds)
-
-            if len(good_left_inds) > minpix:
-                leftx_current = int(np.mean(nonzerox[good_left_inds]))
-            if len(good_right_inds) > minpix:
-                rightx_current = int(np.mean(nonzerox[good_right_inds]))
-
-        left_lane_inds = np.concatenate(left_lane_inds)
-        right_lane_inds = np.concatenate(right_lane_inds)
-
-        leftx = nonzerox[left_lane_inds]
-        lefty = nonzeroy[left_lane_inds]
-        rightx = nonzerox[right_lane_inds]
-        righty = nonzeroy[right_lane_inds]
-
-        return leftx, lefty, rightx, righty
-
-    def _fit_polynomial(self, binary_frame: np.ndarray):
-        """
-        Fit a second-degree polynomial to the detected lane pixels.
-        """
-        leftx, lefty, rightx, righty = self._find_lane_pixels(binary_frame)
-
-        left_fit = np.polyfit(lefty, leftx, 2) if len(leftx) > 0 else None
-        right_fit = np.polyfit(righty, rightx, 2) if len(rightx) > 0 else None
-
-        return left_fit, right_fit
-
-
-    def _draw_lane_overlay(self, frame: np.ndarray, left_fit, right_fit):
-        """
-        Draw lane overlay using polynomial fits.
-        """
-        ploty = np.linspace(0, frame.shape[0] - 1, frame.shape[0])
-        left_fitx = left_fit[0] * ploty ** 2 + left_fit[1] * ploty + left_fit[2] if left_fit is not None else None
-        right_fitx = right_fit[0] * ploty ** 2 + right_fit[1] * ploty + right_fit[2] if right_fit is not None else None
-
-        color_warp = np.zeros_like(frame).astype(np.uint8)
-
-        if left_fitx is not None and right_fitx is not None:
-            pts_left = np.array([np.transpose(np.vstack([left_fitx, ploty]))])
-            pts_right = np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
-            pts = np.hstack((pts_left, pts_right))
-
-            cv2.fillPoly(color_warp, [np.int32(pts)], (0, 255, 0))
-
-        return cv2.addWeighted(frame, 1, color_warp, 0.3, 0)
+    def get_hist(self, img):
+        hist = np.sum(img[img.shape[0]//2:,:], axis=0)
+        return hist
