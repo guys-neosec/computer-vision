@@ -12,11 +12,10 @@ from pydantic import BaseModel
 
 from app.assigment1.custom_types import GrayScaleFrame, Line, RBGFrame
 from app.assigment1.loader import load_video
-from app.assigment1.pipeline.crosswalk_detection import crosswalk
 from app.assigment1.utilities import extract_metadata, progressbar
 
-OUTPUT_FORMAT = "avc1"
-TRESHOLD = 0.3
+OUTPUT_FORMAT = "mp4v"
+TRESHOLD = 0.7
 
 
 class LanesHistory(BaseModel):
@@ -35,8 +34,16 @@ class Pipeline:
         self.frame_count = metadata.frame_count
         self.fps = metadata.fps
         self.lanes_history = LanesHistory()
-        self.left_valid_line = None
-        self.right_valid_line = None
+        self.i = 0
+        self.move_lane_cooldown = 0
+        self.move_lane = True
+        self.right_slope_his = []
+        self.left_slope_his = []
+        self.inter_x = []
+        self.inter_y = []
+        self.right_slope_avg = 0.6
+        self.left_slope_avg = -0.9
+        self.b_history_left_lane = []
 
     def process(self, output_video: Path) -> None:
         output_video = cv2.VideoWriter(
@@ -46,13 +53,15 @@ class Pipeline:
             (self.width, self.height),
         )
         progress_bar = progressbar(self.frame_count)
-        mask = self._area_of_interest_mask()
         for frame in self._get_frames():
-            isolated_lane_colors = self._isolate_color_lanes(frame)
-            blur_gray = self._process_for_canny(isolated_lane_colors)
-            edges = cv2.Canny(blur_gray, 50, 150)
-            roi_edges = cv2.bitwise_and(edges, mask)
-            lines = self._hough_transform(roi_edges)
+            corrected_frame = frame.copy()
+            if is_night := self._is_night_frame(frame):
+                corrected_frame = self._night_correction(frame)
+            mask = self._area_of_interest_mask(is_night)
+            isolated_lane_colors = self._isolate_color_lanes(corrected_frame, is_night)
+            binary_frame = self._process_for_canny(isolated_lane_colors)
+            roi_binary_frame = cv2.bitwise_and(binary_frame, mask)
+            lines = self._hough_transform(roi_binary_frame)
 
             if lines is None:
                 output_video.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
@@ -61,142 +70,124 @@ class Pipeline:
             left_lines, right_lines = self._separate_lines(lines)
             left_slope = self._calculate_average_slope(left_lines)
             if not left_slope:
-                left_slope = -1.1
+                left_slope = -1.8 if is_night else -1.1
             right_slope = self._calculate_average_slope(right_lines)
             if not right_slope:
-                right_slope = 0.6
-
+                right_slope = 0.8 if is_night else 0.6
+            right_slope = self._average_history(right_slope, self.right_slope_his)
+            left_slope = self._average_history(left_slope, self.left_slope_his)
             avg_left_line = self._average_lines(left_lines)
             avg_right_line = self._average_lines(right_lines)
-            # print(avg_left_line)
-            # print(avg_right_line)
-            if abs(right_slope - 0.6) >= TRESHOLD > abs(left_slope + 0.9):
-                avg_right_line = self.right_valid_line
-            else:
-                self.right_valid_line = avg_right_line
-            if abs(right_slope - 0.6) < TRESHOLD <= abs(left_slope + 0.9):
-                avg_left_line = self.left_valid_line
-            else:
-                self.left_valid_line = avg_left_line
-
-            roi_top = 700  # Example top limit for ROI
+            frame_height = frame.shape[0]
+            roi_top = 800 if is_night else 700
             extended_left_line = self._extend_line_to_full_height(
                 avg_left_line,
                 roi_top,
-                self.height,
+                frame_height,
             )
             extended_right_line = self._extend_line_to_full_height(
                 avg_right_line,
                 roi_top,
-                self.height,
+                frame_height,
             )
 
             smoothed_left_line = self._smooth_line(
                 extended_left_line,
                 self.lanes_history.left,
             )
+            self.b_history_left_lane.append(self.get_b(smoothed_left_line))
+            if len(self.b_history_left_lane) > 20:
+                self.b_history_left_lane.pop(0)
             smoothed_right_line = self._smooth_line(
                 extended_right_line,
                 self.lanes_history.right,
             )
 
             # =============== STEP 6: Draw Final Lanes ===============
-            annotated_frame = self._draw_lanes_on_frame(
-                frame,
-                smoothed_left_line,
-                smoothed_right_line,
-                fill_color=(0, 255, 0),  # Optional fill color for area between lanes
-            )
-            debug_text = (
-                f"Left Slope: {left_slope:.2f}"
-                if left_slope is not None
-                else "Left Slope: None"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
+            if self.move_lane_cooldown > 0:
+                self.move_lane_cooldown -= 1
+                x, y = self.calculate_intersection(
+                    smoothed_left_line,
+                    smoothed_right_line,
+                )
+                x = self._average_history(x, self.inter_x)
+                hold_x.append(x)
+                if len(hold_x) == 20:
+                    # Different approach because we need tighter bound for night
+                    if is_night:
+                        txt = None
+                        max_index = np.argmax(self.b_history_left_lane)
+                        min_index = np.argmin(self.b_history_left_lane)
+                        threshold = (
+                            self.b_history_left_lane[max_index]
+                            - self.b_history_left_lane[min_index]
+                        ) > 200
+                        if threshold and min_index < max_index:
+                            txt = "moving left"
+                        elif threshold:
+                            txt = "moving right"
 
-            debug_text = (
-                f"Right Slope: {right_slope:.2f}"
-                if right_slope is not None
-                else "Right Slope: None"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 100),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
+                    else:
+                        count = 0
+                        for i in range(len(hold_x) - 1):
+                            if hold_x[i] > hold_x[i + 1]:
+                                count += 1
+                            else:
+                                count -= 1
+                        if max(hold_x) - min(hold_x) < 40:
+                            txt = None
+                        if count > 0:
+                            txt = "moving left"
+                        else:
+                            txt = "moving right"
+            else:
+                threshold = TRESHOLD if not is_night else 1
+                num = 4 if not is_night else 6
+                self.move_lane = (
+                    True
+                    if (
+                        abs(right_slope - self.right_slope_avg) >= threshold
+                        and abs(left_slope + self.left_slope_avg) >= threshold
+                    )
+                    or abs(right_slope - self.right_slope_avg) > num
+                    or abs(left_slope + self.left_slope_avg) > num
+                    else False
+                )
 
-            debug_text = (
-                "move lane"
-                if abs(right_slope - 0.6) >= TRESHOLD
-                and abs(left_slope + 0.9) >= TRESHOLD
-                else "same lane"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 150),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
+                if self.move_lane:
+                    txt = None
+                    self.move_lane_cooldown = 70
+                    self.inter_x = []
+                    self.inter_y = []
+                    self.count_frames_since_change = 0
+                    hold_x = []
+                    self.b_history_left_lane = []
 
-            debug_text = (
-                "right error"
-                if abs(right_slope - 0.6) >= TRESHOLD
-                and abs(left_slope + 0.9) < TRESHOLD
-                else "right okay"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 200),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
-
-            debug_text = (
-                "left error"
-                if abs(right_slope - 0.6) < TRESHOLD
-                and abs(left_slope + 0.9) >= TRESHOLD
-                else "left okay"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 250),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
-            crosswalk_rectangle = crosswalk(frame)
-            if crosswalk_rectangle is not None:
-                x1, y1, x2, y2 = crosswalk_rectangle
-                overlay = frame.copy()
-                color = (255, 0, 255)
-                cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-                annotated_frame = cv2.addWeighted(overlay, 0.4, annotated_frame, 0.6, 0)
+            if self.move_lane and txt:
+                annotated_frame = frame.copy()
+                cv2.putText(
+                    annotated_frame,
+                    txt,
+                    (int(self.width / 4), int(self.height / 2)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    3.0,
+                    (0, 0, 255),
+                    5,
+                    cv2.LINE_AA,
+                )
+            else:
+                # Draw the lane lines
+                annotated_frame = self.draw_lanes_on_frame(
+                    frame,
+                    smoothed_left_line,
+                    smoothed_right_line,
+                    fill_color=(0, 255, 0),
+                    draw_lane_area=True,
+                )
 
             output_video.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
-            count = progress_bar()
-            if int(count) % 250 == 0:
-                # Resetting lanes history
-                self.lanes_history = LanesHistory()
+            progress_bar()
+        output_video.release()
 
     def _get_frames(self) -> Iterable[RBGFrame]:
         logger.debug("Iterating through video frames")
@@ -206,6 +197,22 @@ class Pipeline:
             yield frame
         self.video.release()
         return
+
+    @staticmethod
+    def _night_correction(frame: RBGFrame, gamma=2.5) -> RBGFrame:
+        inv_gamma = 1.0 / gamma
+        lookup_table = np.array(
+            [((i / 255.0) ** inv_gamma) * 255 for i in np.arange(0, 256)],
+        ).astype("uint8")
+
+        # Apply gamma correction using the lookup table
+        corrected_image = cv2.LUT(frame, lookup_table)
+        kernel_size = 9
+
+        # Smoothing image, noise from correcting
+        return cv2.GaussianBlur(corrected_image, (kernel_size, kernel_size), 0)
+
+        # Display the corrected image
 
     def _separate_lines(self, lines: list[Line]) -> tuple[list[Line], list[Line]]:
         left_lines = []
@@ -322,22 +329,27 @@ class Pipeline:
         return np.mean(slopes) if slopes else None
 
     @staticmethod
-    def _isolate_color_lanes(frame: RBGFrame) -> RBGFrame:
-        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+    def _is_night_frame(frame: RBGFrame, threshold=80) -> bool:
+        # Convert to grayscale
+        gray_image = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
 
-        # Define ranges for yellow and white
-        lower_yellow = np.array([20, 80, 80])
-        upper_yellow = np.array([40, 150, 150])
-        lower_white = np.array([0, 0, 120])
-        upper_white = np.array([255, 30, 150])
+        # Calculate the average pixel intensity
+        avg_intensity = np.mean(gray_image)
+
+        # Check if the average intensity is below the threshold
+        return avg_intensity < threshold
+
+    @staticmethod
+    def _isolate_color_lanes(frame: RBGFrame, is_night=False) -> RBGFrame:
+        hsv_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+        lower_white = np.array([0, 0, 175])
+        upper_white = np.array([200, 150 if not is_night else 65, 255])
 
         # Create masks for yellow and white
-        yellow_mask = cv2.inRange(hsv_frame, lower_yellow, upper_yellow)
         white_mask = cv2.inRange(hsv_frame, lower_white, upper_white)
 
         # Combine masks and apply
-        combined_mask = cv2.bitwise_or(yellow_mask, white_mask)
-        color_isolated = cv2.bitwise_and(hsv_frame, hsv_frame, mask=combined_mask)
+        color_isolated = cv2.bitwise_and(hsv_frame, hsv_frame, mask=white_mask)
 
         return cv2.cvtColor(color_isolated, cv2.COLOR_HSV2RGB)
 
@@ -370,21 +382,35 @@ class Pipeline:
             max_line_gap,
         )
 
-    def _area_of_interest_mask(self) -> GrayScaleFrame:
+    def _area_of_interest_mask(self, is_night=False) -> GrayScaleFrame:
         height, width = self.height, self.width
         mask = np.zeros((height, width), dtype=np.uint8)
 
         polygon = np.array(
             [
                 [
-                    (int(width * 0.2), height),  # Bottom-left
-                    (int(width * 0.45), int(height * 0.6)),  # Top-left
-                    (int(width * 0.55), int(height * 0.6)),  # Top-right
-                    (int(width * 0.9), height),  # Bottom-right
+                    (int(width * 0.2), height * 0.8),  # Bottom-left
+                    (int(width * 0.35), int(height * 0.55)),  # Top-left
+                    (int(width * 0.55), int(height * 0.55)),  # Top-right
+                    (int(width * 0.8), height * 0.8),  # Bottom-right
                 ],
             ],
             dtype=np.int32,
         )
+
+        if is_night:
+            # Different Video, adjusting ROI
+            polygon = np.array(
+                [
+                    [
+                        (int(width * 0.3), height),  # Bottom-left
+                        (int(width * 0.3), int(height * 0.75)),  # Top-left
+                        (int(width * 0.5), int(height * 0.7)),  # Top-left
+                        (int(width * 0.8), height),  # Bottom-right
+                    ],
+                ],
+                dtype=np.int32,
+            )
 
         # Fill polygon with white
         cv2.fillPoly(mask, polygon, [255])
@@ -392,52 +418,116 @@ class Pipeline:
         return mask
 
     @staticmethod
-    def _draw_lanes_on_frame(
-        frame: RBGFrame,
-        left_lane: Line,
-        right_lane: Line,
-        thickness: int = 8,
-        fill_color: list | None = None,
-    ) -> RBGFrame:
-        """
-        Draw left and right lanes onto the frame.
-        Optionally fill the area in between lanes.
-        """
-        overlay = frame.copy()
-        color = (255, 0, 0)
+    def _average_history(
+        current_slope: float,
+        history: list[float],
+        max_history: int = 10,
+    ) -> None | float:
+        history.append(current_slope)
 
-        # Draw the lane lines
-        if left_lane is not None:
-            cv2.line(
-                overlay,
-                (left_lane[0], left_lane[1]),
-                (left_lane[2], left_lane[3]),
-                color,
-                thickness,
-            )
-        if right_lane is not None:
-            cv2.line(
-                overlay,
-                (right_lane[0], right_lane[1]),
-                (right_lane[2], right_lane[3]),
-                color,
-                thickness,
-            )
+        if len(history) > max_history:
+            history.pop(0)
 
-        if (left_lane is not None) and (right_lane is not None):
-            pts = np.array(
-                [
-                    [left_lane[0], left_lane[1]],
-                    [left_lane[2], left_lane[3]],
-                    [right_lane[2], right_lane[3]],
-                    [right_lane[0], right_lane[1]],
-                ],
-                dtype=np.int32,
-            )
+        # If we have no lines in history, return None
+        if len(history) == 0:
+            return None
 
-            cv2.fillPoly(overlay, [pts], fill_color)
+        return np.mean(history)
 
-        # Combine overlay with original using some transparency
-        alpha = 0.4
+    def calculate_intersection(
+        self,
+        left_line: tuple,
+        right_line: tuple,
+    ) -> tuple[float, float]:
+        # Unpack the lines
+        x1_left, y1_left, x2_left, y2_left = left_line
+        x1_right, y1_right, x2_right, y2_right = right_line
 
-        return cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+        # Calculate the slopes (m1 and m2)
+        m1 = (y2_left - y1_left) / (x2_left - x1_left) if x2_left != x1_left else None
+        m2 = (
+            (y2_right - y1_right) / (x2_right - x1_right)
+            if x2_right != x1_right
+            else None
+        )
+
+        # Handle vertical lines
+        if m1 is None:  # Left line is vertical
+            x = x1_left
+            y = m2 * x + (y1_right - m2 * x1_right)
+        elif m2 is None:  # Right line is vertical
+            x = x1_right
+            y = m1 * x + (y1_left - m1 * x1_left)
+        else:
+            # Calculate the y-intercepts (b1 and b2)
+            b1 = y1_left - m1 * x1_left
+            b2 = y1_right - m2 * x1_right
+
+            # Calculate the intersection point
+            x = (b2 - b1) / (m1 - m2)
+            y = m1 * x + b1
+
+        return x, y
+
+    @staticmethod
+    def get_b(line: Line) -> float:
+        x1, y1, x2, y2 = line
+        m = (y2 - y1) / (x2 - x1)
+        # Calculate y-intercept (b)
+        b = y1 - m * x1
+        return b
+
+
+def draw_lanes_on_frame(
+    self,
+    frame,
+    left_lane,
+    right_lane,
+    color=(255, 0, 0),
+    thickness=8,
+    fill_color=None,
+    draw_lane_area=False,
+):
+    """
+    Draw left and right lanes onto the frame.
+    Optionally fill the area in between lanes.
+    """
+    overlay = frame.copy()
+
+    # Draw the lane lines
+    if left_lane is not None:
+        cv2.line(
+            overlay,
+            (left_lane[0], left_lane[1]),
+            (left_lane[2], left_lane[3]),
+            color,
+            thickness,
+        )
+    if right_lane is not None:
+        cv2.line(
+            overlay,
+            (right_lane[0], right_lane[1]),
+            (right_lane[2], right_lane[3]),
+            color,
+            thickness,
+        )
+
+    # Optionally fill the area between the two lanes
+    if draw_lane_area and (left_lane is not None) and (right_lane is not None):
+        pts = np.array(
+            [
+                [left_lane[0], left_lane[1]],
+                [left_lane[2], left_lane[3]],
+                [right_lane[2], right_lane[3]],
+                [right_lane[0], right_lane[1]],
+            ],
+            dtype=np.int32,
+        )
+
+        cv2.fillPoly(overlay, [pts], fill_color)
+
+    # Combine overlay with original using some transparency
+    alpha = 0.4
+    frame_with_lanes = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+
+    return frame_with_lanes
