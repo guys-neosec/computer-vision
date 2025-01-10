@@ -569,14 +569,6 @@ class Pipeline:
                 [1520, 0],     # Top-right
                 [400, 0]       # Top-left
             ])
-        # if len(image.shape) == 2:  # Convert grayscale to color
-        #     debug_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-        # for point in src:
-        #     cv2.circle(debug_image, tuple(map(int, point)), 10, (0, 1, 0), -1)
-
-        # cv2.imshow("src points", debug_image*255)
-        # cv2.waitKey(0)
-        # exit(0)
         M = cv2.getPerspectiveTransform(src, dst)
         Minv = cv2.getPerspectiveTransform(dst, src)
         img_size=(image.shape[1],image.shape[0])
