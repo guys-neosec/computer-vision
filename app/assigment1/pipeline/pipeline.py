@@ -107,7 +107,8 @@ class Pipeline:
             if self.move_lane_cooldown > 0:
                 self.move_lane_cooldown -= 1
                 x, y = self.calculate_intersection(
-                    smoothed_left_line, smoothed_right_line
+                    smoothed_left_line,
+                    smoothed_right_line,
                 )
                 x = self._average_history(x, self.inter_x)
                 hold_x.append(x)
@@ -328,7 +329,7 @@ class Pipeline:
         return np.mean(slopes) if slopes else None
 
     @staticmethod
-    def _is_night_frame(frame: RBGFrame, threshold=250) -> bool:
+    def _is_night_frame(frame: RBGFrame, threshold=80) -> bool:
         # Convert to grayscale
         gray_image = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
 
@@ -434,7 +435,9 @@ class Pipeline:
         return np.mean(history)
 
     def calculate_intersection(
-        self, left_line: tuple, right_line: tuple
+        self,
+        left_line: tuple,
+        right_line: tuple,
     ) -> tuple[float, float]:
         # Unpack the lines
         x1_left, y1_left, x2_left, y2_left = left_line
