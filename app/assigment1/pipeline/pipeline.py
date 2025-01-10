@@ -482,6 +482,7 @@ class Pipeline:
 
 
 def draw_lanes_on_frame(
+    self,
     frame,
     left_lane,
     right_lane,
