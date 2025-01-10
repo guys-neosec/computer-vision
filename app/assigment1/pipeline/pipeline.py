@@ -57,7 +57,6 @@ class Pipeline:
             corrected_frame = frame.copy()
             if self._is_night_frame(frame):
                 corrected_frame = self._night_correction(frame)
-
             mask = self._area_of_interest_mask()
             isolated_lane_colors = self._isolate_color_lanes(corrected_frame)
             binary_frame = self._process_for_canny(isolated_lane_colors)
@@ -75,12 +74,12 @@ class Pipeline:
             right_slope = self._calculate_average_slope(right_lines)
             if not right_slope:
                 right_slope = 0.6
-            right_slope = self._average_slope(right_slope,self.right_slope_his)
-            left_slope = self._average_slope(left_slope,self.left_slope_his)
+            right_slope = self._average_history(right_slope,self.right_slope_his)
+            left_slope = self._average_history(left_slope,self.left_slope_his)
             avg_left_line = self._average_lines(left_lines)
             avg_right_line = self._average_lines(right_lines)
             frame_height = frame.shape[0]
-            roi_top = 435
+            roi_top = 700
             extended_left_line = self._extend_line_to_full_height(
                 avg_left_line,
                 roi_top,
@@ -105,12 +104,10 @@ class Pipeline:
             if self.move_lane_cooldown > 0 :
                 self.move_lane_cooldown -=1
                 x,y = self.calculate_intersection(smoothed_left_line,smoothed_right_line)
-                x = self._average_slope(x,self.inter_x)
+                x = self._average_history(x,self.inter_x)
                 hold_x.append(x)
-
-                if len(hold_x) == 35:
+                if len(hold_x) == 20:
                     count =0
-                    print(hold_x)
                     for i in range(len(hold_x)-1):
                         if hold_x[i]>hold_x[i+1]:
                             count+=1
@@ -119,22 +116,15 @@ class Pipeline:
                     if max(hold_x)-min(hold_x) < 40:
                         txt = None
                     if count >0:
-                        txt = "left"
+                        txt = "moving left"
                     else:
-                        txt = "right"
+                        txt = "moving right"
             else:
                 self.move_lane  =  True if (abs(right_slope - self.right_slope_avg) >= TRESHOLD \
                     and abs(left_slope + self.left_slope_avg) >= TRESHOLD) or \
                     abs(right_slope - self.right_slope_avg) > 4 or abs(left_slope + self.left_slope_avg) > 4 else False
 
                 if self.move_lane:
-                    print((abs(right_slope - self.right_slope_avg) >= TRESHOLD \
-                    and abs(left_slope + self.left_slope_avg) >= TRESHOLD))
-                    print((abs(right_slope - self.right_slope_avg), abs(left_slope + self.left_slope_avg) ))
-                    print(abs(right_slope - self.right_slope_avg) > 4)
-                    print(abs(right_slope - self.right_slope_avg) )
-                    print( abs(left_slope + self.left_slope_avg) > 4)
-                    print( abs(left_slope + self.left_slope_avg) )
                     txt = None
                     self.move_lane_cooldown = 70
                     self.inter_x = []
@@ -143,17 +133,16 @@ class Pipeline:
                     hold_x = []
 
             if self.move_lane and txt:
-                # Annotate the frame with "Moving Lane" in big red text
-                annotated_frame = frame.copy()  # Copy the frame to annotate
+                annotated_frame = frame.copy()
                 cv2.putText(
                     annotated_frame,
-                    txt, # Text to display
-                    (int(self.width / 4), int(self.height / 2)),  # Position (centered horizontally)
-                    cv2.FONT_HERSHEY_SIMPLEX,  # Font style
-                    2.0,  # Font size
-                    (0, 0, 255),  # Color (red in BGR)
-                    5,  # Thickness
-                    cv2.LINE_AA,  # Line type
+                    txt,
+                    (int(self.width / 4), int(self.height / 2)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    3.0,
+                    (0, 0, 255),
+                    5,
+                    cv2.LINE_AA,
                 )
             else:
                 # Draw the lane lines
@@ -161,42 +150,13 @@ class Pipeline:
                     frame,
                     smoothed_left_line,
                     smoothed_right_line,
-                    fill_color=(0, 255, 0),  # Optional fill color for area between lanes
+                    fill_color=(0, 255, 0),
                     draw_lane_area=True,
                 )
-            debug_text = (
-                f"Left Slope: {left_slope:.2f}"
-                if left_slope is not None
-                else "Left Slope: None"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
 
-            debug_text = (
-                f"Right Slope: {right_slope:.2f}"
-                if right_slope is not None
-                else "Right Slope: None"
-            )
-            cv2.putText(
-                annotated_frame,
-                debug_text,
-                (50, 100),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (255, 255, 255),
-                2,
-            )
-       
 
-        output_video.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
-        progress_bar()
+            output_video.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
+            progress_bar()
         output_video.release()
 
 
@@ -434,7 +394,7 @@ class Pipeline:
         return mask
 
     @staticmethod
-    def _average_slope(
+    def _average_history(
         current_slope: float,
         history: list[float],
         max_history: int = 10,
@@ -477,33 +437,3 @@ class Pipeline:
 
         return x, y
 
-    def perspective_warp(self, img,
-                dst_size=(1280,720),
-                src=np.float32([(0.43,0.65),(0.58,0.65),(0.1,1),(1,1)]),
-                dst=np.float32([(0,0), (1, 0), (0,1), (1,1)])):
-        img_size = np.float32([(img.shape[1],img.shape[0])])
-        src = src* img_size
-        dst = dst * np.float32(dst_size)
-        M = cv2.getPerspectiveTransform(src, dst)
-        warped = cv2.warpPerspective(img, M, dst_size)
-        return warped
-
-    def inv_perspective_warp(self, img,
-                     dst_size=(1280,720),
-                     src=np.float32([(0,0), (1, 0), (0,1), (1,1)]),
-                     dst=np.float32([(0.43,0.65),(0.58,0.65),(0.1,1),(1,1)])):
-        img_size = np.float32([(img.shape[1],img.shape[0])])
-        src = src* img_size
-        # For destination points, I'm arbitrarily choosing some points to be
-        # a nice fit for displaying our warped result
-        # again, not exact, but close enough for our purposes
-        dst = dst * np.float32(dst_size)
-        # Given src and dst points, calculate the perspective transform matrix
-        M = cv2.getPerspectiveTransform(src, dst)
-        # Warp the image using OpenCV warpPerspective()
-        warped = cv2.warpPerspective(img, M, dst_size)
-        return warped
-
-    def get_hist(self, img):
-        hist = np.sum(img[img.shape[0]//2:,:], axis=0)
-        return hist
