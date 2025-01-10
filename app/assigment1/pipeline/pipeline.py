@@ -176,7 +176,7 @@ class Pipeline:
                 )
             else:
                 # Draw the lane lines
-                annotated_frame = draw_lanes_on_frame(
+                annotated_frame = self.draw_lanes_on_frame(
                     frame,
                     smoothed_left_line,
                     smoothed_right_line,
@@ -341,19 +341,13 @@ class Pipeline:
     @staticmethod
     def _isolate_color_lanes(frame: RBGFrame, is_night=False) -> RBGFrame:
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-
-        # Define ranges for yellow and white
-        # lower_yellow = np.array([20, 80, 80])
-        # upper_yellow = np.array([40, 150, 150])
         lower_white = np.array([0, 0, 175])
         upper_white = np.array([200, 150 if not is_night else 65, 255])
 
         # Create masks for yellow and white
-        # yellow_mask = cv2.inRange(hsv_frame, lower_yellow, upper_yellow)
         white_mask = cv2.inRange(hsv_frame, lower_white, upper_white)
 
         # Combine masks and apply
-        # combined_mask = cv2.bitwise_or(yellow_mask, white_mask)
         color_isolated = cv2.bitwise_and(hsv_frame, hsv_frame, mask=white_mask)
 
         return cv2.cvtColor(color_isolated, cv2.COLOR_HSV2RGB)
@@ -482,6 +476,7 @@ class Pipeline:
 
 
 def draw_lanes_on_frame(
+    self,
     frame,
     left_lane,
     right_lane,
