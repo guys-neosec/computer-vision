@@ -75,13 +75,13 @@ class Pipeline:
                 left_slope = -1.8 if is_night else -1.1
             right_slope = self._calculate_average_slope(right_lines)
             if not right_slope:
-                right_slope = 0.8 if is_night else 1.3
+                right_slope = 0.8 if is_night else 0.6
             right_slope = self._average_history(right_slope, self.right_slope_his)
             left_slope = self._average_history(left_slope, self.left_slope_his)
             avg_left_line = self._average_lines(left_lines)
             avg_right_line = self._average_lines(right_lines)
             frame_height = frame.shape[0]
-            roi_top = 800 if is_night else 750
+            roi_top = 800 if is_night else 700
             extended_left_line = self._extend_line_to_full_height(
                 avg_left_line,
                 roi_top,
@@ -121,9 +121,9 @@ class Pipeline:
                         max_index = np.argmax(self.b_history_left_lane)
                         min_index = np.argmin(self.b_history_left_lane)
                         threshold = (
-                                            self.b_history_left_lane[max_index]
-                                            - self.b_history_left_lane[min_index]
-                                    ) > 200
+                            self.b_history_left_lane[max_index]
+                            - self.b_history_left_lane[min_index]
+                        ) > 200
                         if threshold and min_index < max_index:
                             txt = "moving left"
                         elif threshold:
@@ -144,15 +144,15 @@ class Pipeline:
                             txt = "moving right"
             else:
                 threshold = TRESHOLD if not is_night else 1
-                num = 15 if not is_night else 6
+                num = 4 if not is_night else 6
                 self.move_lane = (
                     True
                     if (
-                               abs(right_slope - self.right_slope_avg) >= threshold
-                               and abs(left_slope + self.left_slope_avg) >= threshold
-                       )
-                       or abs(right_slope - self.right_slope_avg) > num
-                       or abs(left_slope + self.left_slope_avg) > num
+                        abs(right_slope - self.right_slope_avg) >= threshold
+                        and abs(left_slope + self.left_slope_avg) >= threshold
+                    )
+                    or abs(right_slope - self.right_slope_avg) > num
+                    or abs(left_slope + self.left_slope_avg) > num
                     else False
                 )
 
@@ -254,9 +254,9 @@ class Pipeline:
 
     @staticmethod
     def _smooth_line(
-            current_line: Line,
-            history: list[Line],
-            max_history: int = 10,
+        current_line: Line,
+        history: list[Line],
+        max_history: int = 10,
     ) -> None | Line:
         """
         Smooth the line over time using a small history buffer.
@@ -288,9 +288,9 @@ class Pipeline:
 
     @staticmethod
     def _extend_line_to_full_height(
-            line: None | tuple[int, int, int, int],
-            top_limit: int,
-            bottom_limit: int,
+        line: None | tuple[int, int, int, int],
+        top_limit: int,
+        bottom_limit: int,
     ) -> None | tuple[int, int, int, int]:
         if line is None:
             return None
@@ -450,9 +450,9 @@ class Pipeline:
 
     @staticmethod
     def _average_history(
-            current_slope: float,
-            history: list[float],
-            max_history: int = 10,
+        current_slope: float,
+        history: list[float],
+        max_history: int = 10,
     ) -> None | float:
         history.append(current_slope)
 
@@ -466,9 +466,9 @@ class Pipeline:
         return np.mean(history)
 
     def calculate_intersection(
-            self,
-            left_line: tuple,
-            right_line: tuple,
+        self,
+        left_line: tuple,
+        right_line: tuple,
     ) -> tuple[float, float]:
         # Unpack the lines
         x1_left, y1_left, x2_left, y2_left = left_line
@@ -509,14 +509,14 @@ class Pipeline:
         return b
 
     def draw_lanes_on_frame(
-            self,
-            frame,
-            left_lane,
-            right_lane,
-            color=(255, 0, 0),
-            thickness=8,
-            fill_color=None,
-            draw_lane_area=False,
+        self,
+        frame,
+        left_lane,
+        right_lane,
+        color=(255, 0, 0),
+        thickness=8,
+        fill_color=None,
+        draw_lane_area=False,
     ):
         """
         Draw left and right lanes onto the frame.
