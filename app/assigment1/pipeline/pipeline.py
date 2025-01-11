@@ -16,7 +16,7 @@ from app.assigment1.pipeline.crosswalk_detection import crosswalk
 from app.assigment1.utilities import extract_metadata, progressbar
 
 OUTPUT_FORMAT = "mp4v"
-TRESHOLD = 15
+TRESHOLD = 0.7
 
 
 class LanesHistory(BaseModel):
