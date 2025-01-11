@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.assigment1.custom_types import GrayScaleFrame, Line, RBGFrame
 from app.assigment1.loader import load_video
+from app.assigment1.pipeline.crosswalk_detection import crosswalk
 from app.assigment1.utilities import extract_metadata, progressbar
 
 OUTPUT_FORMAT = "mp4v"
@@ -60,7 +61,8 @@ class Pipeline:
             mask = self._area_of_interest_mask(is_night)
             isolated_lane_colors = self._isolate_color_lanes(corrected_frame, is_night)
             binary_frame = self._process_for_canny(isolated_lane_colors)
-            roi_binary_frame = cv2.bitwise_and(binary_frame, mask)
+            edges = cv2.Canny(binary_frame, 50, 100)
+            roi_binary_frame = cv2.bitwise_and(edges, mask)
             lines = self._hough_transform(roi_binary_frame)
 
             if lines is None:
@@ -95,7 +97,7 @@ class Pipeline:
                 extended_left_line,
                 self.lanes_history.left,
             )
-            self.b_history_left_lane.append(self.get_b(smoothed_left_line))
+            # self.b_history_left_lane.append(self.get_b(smoothed_left_line))
             if len(self.b_history_left_lane) > 20:
                 self.b_history_left_lane.pop(0)
             smoothed_right_line = self._smooth_line(
@@ -185,6 +187,13 @@ class Pipeline:
                     draw_lane_area=True,
                 )
 
+            crosswalk_rectangle = crosswalk(frame)
+            if crosswalk_rectangle is not None:
+                x1, y1, x2, y2 = crosswalk_rectangle
+                overlay = frame.copy()
+                color = (255, 0, 255)
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+                annotated_frame = cv2.addWeighted(overlay, 0.4, annotated_frame, 0.6, 0)
             output_video.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
             progress_bar()
         output_video.release()
@@ -342,16 +351,26 @@ class Pipeline:
     @staticmethod
     def _isolate_color_lanes(frame: RBGFrame, is_night=False) -> RBGFrame:
         hsv_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
-        lower_white = np.array([0, 0, 175])
-        upper_white = np.array([200, 150 if not is_night else 65, 255])
 
-        # Create masks for yellow and white
+        # White lane HSV range
+        lower_white = np.array([0, 0, 160])
+        upper_white = np.array([200, 50 if not is_night else 65, 255])
+
+        # Yellow lane HSV range
+        lower_yellow = np.array([20, 80, 100])
+        upper_yellow = np.array([40, 255, 255])
+
+        # Create masks for white and yellow
         white_mask = cv2.inRange(hsv_frame, lower_white, upper_white)
+        yellow_mask = cv2.inRange(hsv_frame, lower_yellow, upper_yellow)
 
-        # Combine masks and apply
-        color_isolated = cv2.bitwise_and(hsv_frame, hsv_frame, mask=white_mask)
+        # Combine both masks
+        combined_mask = cv2.bitwise_or(white_mask, yellow_mask)
 
-        return cv2.cvtColor(color_isolated, cv2.COLOR_HSV2RGB)
+        # Apply the combined mask to the original image
+        color_isolated = cv2.bitwise_and(frame, frame, mask=combined_mask)
+
+        return color_isolated
 
     @staticmethod
     def _process_for_canny(frame: RBGFrame) -> GrayScaleFrame:
@@ -385,14 +404,26 @@ class Pipeline:
     def _area_of_interest_mask(self, is_night=False) -> GrayScaleFrame:
         height, width = self.height, self.width
         mask = np.zeros((height, width), dtype=np.uint8)
-
+        # Amit's Video
+        # polygon = np.array(
+        #     [
+        #         [
+        #             (int(width * 0.2), height * 0.8),  # Bottom-left
+        #             (int(width * 0.35), int(height * 0.55)),  # Top-left
+        #             (int(width * 0.55), int(height * 0.55)),  # Top-right
+        #             (int(width * 0.8), height * 0.8),  # Bottom-right
+        #         ],
+        #     ],
+        #     dtype=np.int32,
+        # )
+        # Guys
         polygon = np.array(
             [
                 [
-                    (int(width * 0.2), height * 0.8),  # Bottom-left
-                    (int(width * 0.35), int(height * 0.55)),  # Top-left
-                    (int(width * 0.55), int(height * 0.55)),  # Top-right
-                    (int(width * 0.8), height * 0.8),  # Bottom-right
+                    (int(width * 0.2), height),  # Bottom-left
+                    (int(width * 0.5), int(height * 0.6)),  # Top-left
+                    (int(width * 0.6), int(height * 0.6)),  # Top-right
+                    (int(width * 0.8), height),  # Bottom-right
                 ],
             ],
             dtype=np.int32,
@@ -477,57 +508,56 @@ class Pipeline:
         b = y1 - m * x1
         return b
 
+    def draw_lanes_on_frame(
+        self,
+        frame,
+        left_lane,
+        right_lane,
+        color=(255, 0, 0),
+        thickness=8,
+        fill_color=None,
+        draw_lane_area=False,
+    ):
+        """
+        Draw left and right lanes onto the frame.
+        Optionally fill the area in between lanes.
+        """
+        overlay = frame.copy()
 
-def draw_lanes_on_frame(
-    self,
-    frame,
-    left_lane,
-    right_lane,
-    color=(255, 0, 0),
-    thickness=8,
-    fill_color=None,
-    draw_lane_area=False,
-):
-    """
-    Draw left and right lanes onto the frame.
-    Optionally fill the area in between lanes.
-    """
-    overlay = frame.copy()
+        # Draw the lane lines
+        if left_lane is not None:
+            cv2.line(
+                overlay,
+                (left_lane[0], left_lane[1]),
+                (left_lane[2], left_lane[3]),
+                color,
+                thickness,
+            )
+        if right_lane is not None:
+            cv2.line(
+                overlay,
+                (right_lane[0], right_lane[1]),
+                (right_lane[2], right_lane[3]),
+                color,
+                thickness,
+            )
 
-    # Draw the lane lines
-    if left_lane is not None:
-        cv2.line(
-            overlay,
-            (left_lane[0], left_lane[1]),
-            (left_lane[2], left_lane[3]),
-            color,
-            thickness,
-        )
-    if right_lane is not None:
-        cv2.line(
-            overlay,
-            (right_lane[0], right_lane[1]),
-            (right_lane[2], right_lane[3]),
-            color,
-            thickness,
-        )
+        # Optionally fill the area between the two lanes
+        if draw_lane_area and (left_lane is not None) and (right_lane is not None):
+            pts = np.array(
+                [
+                    [left_lane[0], left_lane[1]],
+                    [left_lane[2], left_lane[3]],
+                    [right_lane[2], right_lane[3]],
+                    [right_lane[0], right_lane[1]],
+                ],
+                dtype=np.int32,
+            )
 
-    # Optionally fill the area between the two lanes
-    if draw_lane_area and (left_lane is not None) and (right_lane is not None):
-        pts = np.array(
-            [
-                [left_lane[0], left_lane[1]],
-                [left_lane[2], left_lane[3]],
-                [right_lane[2], right_lane[3]],
-                [right_lane[0], right_lane[1]],
-            ],
-            dtype=np.int32,
-        )
+            cv2.fillPoly(overlay, [pts], fill_color)
 
-        cv2.fillPoly(overlay, [pts], fill_color)
+        # Combine overlay with original using some transparency
+        alpha = 0.4
+        frame_with_lanes = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
 
-    # Combine overlay with original using some transparency
-    alpha = 0.4
-    frame_with_lanes = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
-
-    return frame_with_lanes
+        return frame_with_lanes
