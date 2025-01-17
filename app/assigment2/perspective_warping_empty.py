@@ -25,7 +25,7 @@ fps = input_video.get(cv2.CAP_PROP_FPS)
 output_video = cv2.VideoWriter(
     "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/output.mp4",
     cv2.VideoWriter_fourcc(*"mp4v"),
-    fps,
+    120,
     (width, height),
 )
 # ========== run on all frames
