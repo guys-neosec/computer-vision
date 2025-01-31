@@ -97,23 +97,26 @@ def validate_calibration(img_names, obj_points, img_points, camera_matrix, dist_
 validate_calibration(img_names, obj_points, img_points, camera_matrix, dist_coefs)
 
 
-def render_3d_object(frame, r_vec, t_vec, camera_matrix, dist_coeffs):
-    obj_path = "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/models/drill.obj"
+obj_path = "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/models/drill.obj"
 
-    mesh = trimesh.load(obj_path, force='mesh', skip_materials=False)
+mesh = trimesh.load(obj_path, force='mesh', skip_materials=False)
+scale_factor = 20
+mesh.apply_scale(scale_factor)
+renderer = None
+scene = pyrender.Scene(bg_color=(0, 0, 0, 0), ambient_light=(0.2, 0.2, 0.2, 1.0))
+
+
+def render_3d_object(frame, r_vec, t_vec, camera_matrix, dist_coeffs):
     if mesh.is_empty:
         print("Mesh is empty, please check the file.")
         return frame
 
     # Scale the model appropriately
-    scale_factor = 20
-    mesh.apply_scale(scale_factor)
 
     # Convert to PyRender mesh
     pyrender_mesh = pyrender.Mesh.from_trimesh(mesh)
 
     # Scene setup
-    scene = pyrender.Scene(bg_color=(0, 0, 0, 0), ambient_light=(0.2, 0.2, 0.2, 1.0))
     fx, fy, cx, cy = camera_matrix[0, 0], camera_matrix[1, 1], camera_matrix[0, 2], \
         camera_matrix[1, 2]
     camera = pyrender.IntrinsicsCamera(fx, fy, cx, cy, znear=0.1, zfar=1000.0)
@@ -126,9 +129,11 @@ def render_3d_object(frame, r_vec, t_vec, camera_matrix, dist_coeffs):
     scene.add(camera, pose=camera_pose)
 
     additional_rotation = R.from_euler('x', -90, degrees=True).as_matrix()
-    # Adjust object pose based on SolvePnP results
     object_pose = np.eye(4)
-    object_pose[:3, :3] = np.dot(additional_rotation, np.eye(3))
+    R_mat, _ = cv2.Rodrigues(r_vec)
+    R_inv = R_mat.T  # Invert the rotation by transposing
+
+    object_pose[:3, :3] = np.dot(R_inv, additional_rotation)
     object_pose[:3, 3] = t_vec.flatten()
 
     light = pyrender.DirectionalLight(color=np.ones(3), intensity=5)
@@ -137,13 +142,12 @@ def render_3d_object(frame, r_vec, t_vec, camera_matrix, dist_coeffs):
     scene.add(pyrender_mesh, pose=object_pose)
 
     # Render the scene
-    renderer = pyrender.OffscreenRenderer(frame.shape[1], frame.shape[0])
+    global renderer
+    if renderer is None:
+        renderer = pyrender.OffscreenRenderer(frame.shape[1], frame.shape[0])
     render, mask = renderer.render(scene)
     render = cv2.cvtColor(render, cv2.COLOR_RGB2BGR)
-    renderer = pyrender.OffscreenRenderer(frame.shape[1], frame.shape[0])
-    render, mask = renderer.render(scene)
-    render = cv2.cvtColor(render, cv2.COLOR_RGB2BGR)
-    renderer.delete()
+    scene.clear()
     mask = np.any(render > [10, 10, 10], axis=-1).astype(np.uint8) * 255
 
     # Overlay the object on the frame
@@ -152,7 +156,6 @@ def render_3d_object(frame, r_vec, t_vec, camera_matrix, dist_coeffs):
         blended_frame[:, :, c] = np.where(mask > 0, render[:, :, c], frame[:, :, c])
 
     return blended_frame
-
 
 
 
@@ -201,8 +204,6 @@ kp_template, desc_template = feature_extractor.detectAndCompute(template_grey, N
 # ========== Process all frames
 index = 0
 while True:
-    if index == 100:
-        break
     ok, frame = input_video.read()
     if not ok:
         break
