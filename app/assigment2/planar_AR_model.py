@@ -120,26 +120,26 @@ def render_3d_object(frame, r_vec, t_vec, camera_matrix, dist_coeffs):
     fx, fy, cx, cy = camera_matrix[0, 0], camera_matrix[1, 1], camera_matrix[0, 2], \
         camera_matrix[1, 2]
     camera = pyrender.IntrinsicsCamera(fx, fy, cx, cy, znear=0.1, zfar=1000.0)
-    camera_pose = np.array([
-        [1, 0, 0, 0],
-        [0, -1, 0, 0],
-        [0, 0, 1, 0],
-        [0, 0, 0, 1]
-    ])
-    scene.add(camera, pose=camera_pose)
-
-    additional_rotation = R.from_euler('x', -90, degrees=True).as_matrix()
-    object_pose = np.eye(4)
     R_mat, _ = cv2.Rodrigues(r_vec)
-    R_inv = R_mat.T  # Invert the rotation by transposing
 
-    object_pose[:3, :3] = np.dot(R_inv, additional_rotation)
-    object_pose[:3, 3] = t_vec.flatten()
+
+    fixed_rotation = R.from_euler('x', -90, degrees=True).as_matrix()
+    object_pose = np.eye(4)
+    object_pose[:3, :3] = fixed_rotation
+    object_pose[:3, 3] = np.array([0,0,0])
+    scene.add(pyrender_mesh, pose=object_pose)
+    camera_pose = np.eye(4)
+    res_R, _ = cv2.Rodrigues(r_vec)
+    camera_pose[0:3, 0:3] = res_R.T
+    camera_pose[0:3, 3] = (-res_R.T @ t_vec).flatten()
+    # 180 about x
+    camera_pose = camera_pose @ np.array(
+        [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
 
     light = pyrender.DirectionalLight(color=np.ones(3), intensity=5)
     scene.add(light, pose=camera_pose)
+    scene.add(camera, pose=camera_pose)
 
-    scene.add(pyrender_mesh, pose=object_pose)
 
     # Render the scene
     global renderer
@@ -154,6 +154,10 @@ def render_3d_object(frame, r_vec, t_vec, camera_matrix, dist_coeffs):
     blended_frame = frame.copy()
     for c in range(3):
         blended_frame[:, :, c] = np.where(mask > 0, render[:, :, c], frame[:, :, c])
+
+
+    cv2.imshow("f", blended_frame)
+    cv2.waitKey(20)
 
     return blended_frame
 
