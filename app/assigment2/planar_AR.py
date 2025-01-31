@@ -92,7 +92,7 @@ def validate_calibration(img_names, obj_points, img_points, camera_matrix, dist_
 # Call the validation function
 validate_calibration(img_names, obj_points, img_points, camera_matrix, dist_coefs)
 # ===== video input, output and metadata
-video_path = "/Users/gstrauss/Downloads/IMG_4621.MOV"
+video_path = "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/input.mp4"
 input_video = cv2.VideoCapture(video_path)
 width = int(input_video.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(input_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
