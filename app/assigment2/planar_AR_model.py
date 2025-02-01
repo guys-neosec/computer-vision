@@ -132,7 +132,6 @@ def render_3d_object(frame, r_vec, t_vec, camera_matrix, dist_coeffs):
     res_R, _ = cv2.Rodrigues(r_vec)
     camera_pose[0:3, 0:3] = res_R.T
     camera_pose[0:3, 3] = (-res_R.T @ t_vec).flatten()
-    # 180 about x
     camera_pose = camera_pose @ np.array(
         [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
 
