@@ -16,14 +16,14 @@ wrapped_template = cv2.resize(
     (template_image.shape[1], template_image.shape[0]),
 )
 template_grey = cv2.cvtColor(template_image, cv2.COLOR_BGR2GRAY)
-video_path = "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/IMG_4447.MOV"
+video_path = "/Users/gstrauss/Downloads/IMG_4642.MOV"
 # ===== video input, output and metadata
 input_video = cv2.VideoCapture(video_path)
 width = int(input_video.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(input_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
 fps = input_video.get(cv2.CAP_PROP_FPS)
 output_video = cv2.VideoWriter(
-    "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/output.mp4",
+    "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/output_wrap.mp4",
     cv2.VideoWriter_fourcc(*"mp4v"),
     120,
     (width, height),

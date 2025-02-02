@@ -97,10 +97,11 @@ def validate_calibration(img_names, obj_points, img_points, camera_matrix, dist_
 validate_calibration(img_names, obj_points, img_points, camera_matrix, dist_coefs)
 
 
-obj_path = "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/models/drill.obj"
+obj_path = "/Users/gstrauss/Downloads/Personal/cyborg_cowboy_potato_animated/scene.gltf"
 
-mesh = trimesh.load(obj_path, force='mesh', skip_materials=False)
-scale_factor = 20
+mesh = trimesh.load(obj_path, skip_materials=False)
+mesh = mesh.to_mesh()
+scale_factor = 4
 mesh.apply_scale(scale_factor)
 renderer = None
 scene = pyrender.Scene(bg_color=(0, 0, 0, 0), ambient_light=(0.2, 0.2, 0.2, 1.0))
@@ -163,13 +164,13 @@ def render_3d_object(frame, r_vec, t_vec, camera_matrix, dist_coeffs):
 
 
 # ===== video input, output and metadata
-video_path = "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/input.mp4"
+video_path = "/Users/gstrauss/Downloads/IMG_4643.MOV"
 input_video = cv2.VideoCapture(video_path)
 width = int(input_video.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(input_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
 fps = input_video.get(cv2.CAP_PROP_FPS)
 output_video = cv2.VideoWriter(
-    "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/output.mp4",
+    "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/output_model_2.mp4",
     cv2.VideoWriter_fourcc(*"mp4v"),
     fps,
     (width, height),
