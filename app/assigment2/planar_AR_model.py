@@ -1,13 +1,13 @@
 from glob import glob
 
 import cv2
-import trimesh
-import pyrender
 import numpy as np
+import pyrender
+import trimesh
 from scipy.spatial.transform import Rotation as R
 
 # ======= constants
-np.infty = np.inf
+np.inf = np.inf
 square_size = 2.6
 img_mask = (
     "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/calibration_2/*"
@@ -56,7 +56,11 @@ for i, fn in enumerate(img_names):
 
 # Calibrate the camera
 rms, camera_matrix, dist_coefs, _rvecs, _tvecs = cv2.calibrateCamera(
-    obj_points, img_points, (w, h), None, None
+    obj_points,
+    img_points,
+    (w, h),
+    None,
+    None,
 )
 
 
@@ -69,17 +73,29 @@ def validate_calibration(img_names, obj_points, img_points, camera_matrix, dist_
 
         # Reproject the calibration points
         reprojected_points, _ = cv2.projectPoints(
-            obj_points[i], _rvecs[i], _tvecs[i], camera_matrix, dist_coefs
+            obj_points[i],
+            _rvecs[i],
+            _tvecs[i],
+            camera_matrix,
+            dist_coefs,
         )
         reprojected_points = reprojected_points.reshape(-1, 2)
 
         # Draw the original and reprojected points
         for (x, y), (rx, ry) in zip(img_points[i], reprojected_points, strict=False):
             cv2.circle(
-                img, (int(x), int(y)), 5, (0, 255, 0), -1
+                img,
+                (int(x), int(y)),
+                5,
+                (0, 255, 0),
+                -1,
             )  # Original points in green
             cv2.circle(
-                img, (int(rx), int(ry)), 5, (0, 0, 255), -1
+                img,
+                (int(rx), int(ry)),
+                5,
+                (0, 0, 255),
+                -1,
             )  # Reprojected points in red
 
         # Calculate reprojection error
@@ -111,41 +127,45 @@ gravity = 0.1
 
 time = 120
 
+
 def render_3d_object(frame, r_vec, t_vec, camera_matrix, index):
     if mesh.is_empty:
         print("Mesh is empty, please check the file.")
         return frame
 
-    # Scale the model appropriately
-
-    # Convert to PyRender mesh
     pyrender_mesh = pyrender.Mesh.from_trimesh(mesh)
 
-    # Scene setup
-    fx, fy, cx, cy = camera_matrix[0, 0], camera_matrix[1, 1], camera_matrix[0, 2], \
-        camera_matrix[1, 2]
+    fx, fy, cx, cy = (
+        camera_matrix[0, 0],
+        camera_matrix[1, 1],
+        camera_matrix[0, 2],
+        camera_matrix[1, 2],
+    )
     camera = pyrender.IntrinsicsCamera(fx, fy, cx, cy, znear=0.1, zfar=1000.0)
     R_mat, _ = cv2.Rodrigues(r_vec)
 
-
     # for not animation, remove the y axis rotation
-    fixed_rotation = R.from_euler('yx', [3 * (index % 120),-90], degrees=True).as_matrix()
+    fixed_rotation = R.from_euler(
+        "yx",
+        [3 * (index % 120), -90],
+        degrees=True,
+    ).as_matrix()
     object_pose = np.eye(4)
     object_pose[:3, :3] = fixed_rotation
 
-    object_pose[:3, 3] = np.array([0,0,0])
+    object_pose[:3, 3] = np.array([0, 0, 0])
     scene.add(pyrender_mesh, pose=object_pose)
     camera_position = np.eye(4)
     res_R, _ = cv2.Rodrigues(r_vec)
     camera_position[0:3, 0:3] = res_R.T
     camera_position[0:3, 3] = (-res_R.T @ t_vec).flatten()
     camera_position = camera_position @ np.array(
-        [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
+        [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]],
+    )
 
     light = pyrender.DirectionalLight(color=np.ones(3), intensity=5)
     scene.add(light, pose=camera_position)
     scene.add(camera, pose=camera_position)
-
 
     # Render the scene
     global renderer
@@ -161,16 +181,16 @@ def render_3d_object(frame, r_vec, t_vec, camera_matrix, index):
     for c in range(3):
         blended_frame[:, :, c] = np.where(mask > 0, render[:, :, c], frame[:, :, c])
 
-
     cv2.imshow("f", blended_frame)
     cv2.waitKey(1)
 
     return blended_frame
 
 
-
 # ===== video input, output and metadata
-video_path = "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/input.mp4"
+video_path = (
+    "/Users/gstrauss/Reichman_University/computer-vision/app/assigment2/movie/input.mp4"
+)
 input_video = cv2.VideoCapture(video_path)
 width = int(input_video.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(input_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -267,7 +287,7 @@ while True:
             good_kp_template_inliers
             * [W_real / template_w_pix, H_real / template_h_pix],
             np.zeros((len(good_kp_template_inliers), 1)),
-        ]
+        ],
     ).astype(np.float32)
 
     # Reshape for solvePnP
@@ -320,8 +340,13 @@ while True:
     # )
 
     # Draw the cube on the frame
-    frame = render_3d_object(frame, r_vec_smoothed, t_vec_smoothed, camera_matrix,
-                             index)
+    frame = render_3d_object(
+        frame,
+        r_vec_smoothed,
+        t_vec_smoothed,
+        camera_matrix,
+        index,
+    )
     # Write the frame to the output video
     output_video.write(frame)
 
