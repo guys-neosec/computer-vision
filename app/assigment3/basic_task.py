@@ -1,15 +1,16 @@
 import os
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from matplotlib import pyplot as plt, patches
-from torch.utils.data import Dataset, DataLoader
-from torchvision.datasets import CocoDetection
-from torchvision.models import mobilenet_v3_large, MobileNet_V3_Large_Weights
-import torchvision.transforms as transforms
-
 import torchvision.transforms as T
+from matplotlib import patches
+from matplotlib import pyplot as plt
+from torch import nn
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
+from torchvision.datasets import CocoDetection
+from torchvision.models import MobileNet_V3_Large_Weights, mobilenet_v3_large
+
 
 class SingleObjectCocoDataset(Dataset):
     def __init__(self, root, annFile, transform):
@@ -22,11 +23,14 @@ class SingleObjectCocoDataset(Dataset):
     def __getitem__(self, idx):
         img, targets = self.coco[idx]
         target = targets[0]
-        bbox = target['bbox']
-        label = target['category_id']
+        bbox = target["bbox"]
+        label = target["category_id"]
         img, bbox = self.transform(img, bbox)
-        return img, torch.tensor(bbox, dtype=torch.float32), torch.tensor(label,
-                                                                          dtype=torch.long)
+        return (
+            img,
+            torch.tensor(bbox, dtype=torch.float32),
+            torch.tensor(label, dtype=torch.long),
+        )
 
 
 class BB_model(nn.Module):
@@ -44,12 +48,12 @@ class BB_model(nn.Module):
         # Define classifier and bounding box regressor
         self.classifier = nn.Sequential(
             nn.BatchNorm1d(in_features),
-            nn.Linear(in_features, 4)
+            nn.Linear(in_features, 4),
         )
 
         self.bb = nn.Sequential(
             nn.BatchNorm1d(in_features),
-            nn.Linear(in_features, 4)
+            nn.Linear(in_features, 4),
         )
 
     def forward(self, x):
@@ -84,8 +88,10 @@ def train_epocs(model, optimizer, train_dl, val_dl, epochs=10, C=1000):
             sum_loss += loss.item()
         train_loss = sum_loss / total
         val_loss, val_acc = val_metrics(model, valid_dl, C)
-        print("train_loss %.3f val_loss %.3f val_acc %.3f" % (
-            train_loss, val_loss, val_acc))
+        print(
+            "train_loss %.3f val_loss %.3f val_acc %.3f"
+            % (train_loss, val_loss, val_acc)
+        )
     return sum_loss / total
 
 
@@ -124,10 +130,12 @@ def resize_transform(image, bbox, size=(640, 640)):
     scale_y = new_h / h
     bbox = [bbox[0] * scale_x, bbox[1] * scale_y, bbox[2] * scale_x, bbox[3] * scale_y]
     transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+        [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
+    )
 
     image = transform(image)  # Converts image to [0,1] range
     return image, bbox
+
 
 def visualize_predictions(model, dataset, device, num_images=5):
     model.eval()
@@ -141,18 +149,33 @@ def visualize_predictions(model, dataset, device, num_images=5):
         ground_bbox = bbox.squeeze(0).cpu().numpy()
         img_np = image.cpu().numpy().transpose(1, 2, 0).clip(0, 1)
         fig, ax = plt.subplots(1)
-        rect_predict = patches.Rectangle((pred_bbox[0], pred_bbox[1]), pred_bbox[2],
-                                 pred_bbox[3],
-                                 linewidth=2, edgecolor='r', facecolor='none')
-        rect_ground = patches.Rectangle((ground_bbox[0], ground_bbox[1]), ground_bbox[2],
-                                 ground_bbox[3],
-                                 linewidth=2, edgecolor='b', facecolor='none')
+        rect_predict = patches.Rectangle(
+            (pred_bbox[0], pred_bbox[1]),
+            pred_bbox[2],
+            pred_bbox[3],
+            linewidth=2,
+            edgecolor="r",
+            facecolor="none",
+        )
+        rect_ground = patches.Rectangle(
+            (ground_bbox[0], ground_bbox[1]),
+            ground_bbox[2],
+            ground_bbox[3],
+            linewidth=2,
+            edgecolor="b",
+            facecolor="none",
+        )
         ax.add_patch(rect_ground)
         ax.add_patch(rect_predict)
-        ax.text(pred_bbox[0], pred_bbox[1], f'Pred: {pred_cls}',
-                bbox=dict(facecolor='yellow', alpha=0.5))
+        ax.text(
+            pred_bbox[0],
+            pred_bbox[1],
+            f"Pred: {pred_cls}",
+            bbox=dict(facecolor="yellow", alpha=0.5),
+        )
         ax.imshow(img_np)
         plt.show()
+
 
 base_path = "/Users/gstrauss/Downloads/chair detection 2"
 train_path = os.path.join(base_path, "train")
@@ -162,18 +185,24 @@ train_ann = os.path.join(train_path, "_annotations.coco.json")
 valid_ann = os.path.join(valid_path, "_annotations.coco.json")
 test_ann = os.path.join(test_path, "_annotations.coco.json")
 
-train_dataset = SingleObjectCocoDataset(root=train_path, annFile=train_ann,
-                                        transform=resize_transform)
-valid_dataset = SingleObjectCocoDataset(root=valid_path, annFile=valid_ann,
-                                        transform=resize_transform)
-test_dataset = SingleObjectCocoDataset(root=test_path, annFile=test_ann,
-                                       transform=resize_transform)
+train_dataset = SingleObjectCocoDataset(
+    root=train_path, annFile=train_ann, transform=resize_transform
+)
+valid_dataset = SingleObjectCocoDataset(
+    root=valid_path, annFile=valid_ann, transform=resize_transform
+)
+test_dataset = SingleObjectCocoDataset(
+    root=test_path, annFile=test_ann, transform=resize_transform
+)
 batch_size = 32
 train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 valid_dl = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
 test_dl = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-device = torch.device("mps" if torch.backends.mps.is_available() else (
-    "cuda" if torch.cuda.is_available() else "cpu"))
+device = torch.device(
+    "mps"
+    if torch.backends.mps.is_available()
+    else ("cuda" if torch.cuda.is_available() else "cpu")
+)
 model = BB_model().to(device)
 parameters = filter(lambda p: p.requires_grad, model.parameters())
 optimizer = torch.optim.Adam(parameters, lr=0.006)
