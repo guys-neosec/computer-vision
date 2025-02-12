@@ -17,7 +17,9 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from torchvision.datasets import CocoDetection
 from torchvision.models import MobileNet_V3_Large_Weights, mobilenet_v3_large
-from torchvision.ops import distance_box_iou_loss
+from torchvision.ops import (
+    generalized_box_iou_loss,
+)
 
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 WRITER = SummaryWriter(f"logs/basic_{TIMESTAMP}")
@@ -51,36 +53,53 @@ class SingleObjectCocoDataset(Dataset):
         )
 
 
-class BB_model(nn.Module):
+class BasicModel(nn.Module):
     def __init__(self):
-        super(BB_model, self).__init__()
+        super(BasicModel, self).__init__()
         mobilenet = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.DEFAULT)
 
-        # Extract feature layers excluding classifier head
+        # Use the pretrained feature extractor (frozen)
         self.features = mobilenet.features
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        for param in self.features.parameters():
+            param.requires_grad = False
 
-        # Get number of input features for the classifier
+        self.cls_avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
         in_features = mobilenet.classifier[0].in_features
-
-        # Define classifier and bounding box regressor
         self.classifier = nn.Sequential(
             nn.BatchNorm1d(in_features),
             nn.Linear(in_features, 4),
         )
 
-        self.bb = nn.Sequential(
-            nn.BatchNorm1d(in_features),
-            nn.Linear(in_features, 128),
+        self.bb_conv = nn.Sequential(
+            nn.Conv2d(in_features, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+        )
+
+        self.bb_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.bb_fc = nn.Sequential(
+            nn.Linear(128, 128),
             nn.ReLU(),
             nn.Linear(128, 4),
         )
 
     def forward(self, x):
-        x = self.features(x)
-        x = self.avgpool(x)
-        x = x.view(x.shape[0], -1)
-        return self.classifier(x), self.bb(x)
+        features = self.features(x)
+
+        cls_features = self.cls_avgpool(features)
+        cls_features = torch.flatten(cls_features, 1)
+        cls_out = self.classifier(cls_features)
+
+        bb_features = self.bb_conv(features)
+        bb_features = self.bb_pool(bb_features)
+        bb_features = torch.flatten(bb_features, 1)
+        bb_out = self.bb_fc(bb_features)
+
+        return cls_out, bb_out
 
 
 def train_epocs(model, optimizer, train_dl, val_dl, epochs=10):
@@ -104,12 +123,12 @@ def train_epocs(model, optimizer, train_dl, val_dl, epochs=10):
                 [y_bb[:, :2], y_bb[:, :2] + y_bb[:, 2:]],
                 dim=1,
             )
-            loss_bb = distance_box_iou_loss(
+            loss_bb = generalized_box_iou_loss(
                 out_bb_transformed,
                 y_bb_transformed,
                 reduction="mean",
             )
-            loss = loss_class + loss_bb
+            loss = loss_class + 2 * loss_bb
             WRITER.add_scalar("Loss/train", loss, i * len(train_dl) + index + 1)
             optimizer.zero_grad()
             loss.backward()
@@ -143,7 +162,7 @@ def val_metrics(model, valid_dl):
             dim=1,
         )
         y_bb_transformed = torch.cat([y_bb[:, :2], y_bb[:, :2] + y_bb[:, 2:]], dim=1)
-        loss_bb = distance_box_iou_loss(
+        loss_bb = generalized_box_iou_loss(
             out_bb_transformed,
             y_bb_transformed,
             reduction="mean",
@@ -164,6 +183,9 @@ def update_optimizer(optimizer, lr):
 transform = A.Compose(
     [
         A.Resize(height=640, width=640, p=1),
+        A.ShiftScaleRotate(p=0.5),
+        A.HorizontalFlip(p=0.5),
+        A.RandomBrightnessContrast(p=0.2),
         A.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ToTensorV2(p=1),
     ],
@@ -248,8 +270,9 @@ device = torch.device(
     if torch.backends.mps.is_available()
     else ("cuda" if torch.cuda.is_available() else "cpu"),
 )
-model = BB_model().to(device)
+model = BasicModel().to(device)
 parameters = filter(lambda p: p.requires_grad, model.parameters())
-optimizer = torch.optim.Adam(parameters, lr=0.006)
+optimizer = torch.optim.Adam(parameters)
 train_epocs(model, optimizer, train_dl, valid_dl, epochs=5)
 visualize_predictions(model, test_dataset, device, num_images=5)
+visualize_predictions(model, train_dataset, device, num_images=5)
