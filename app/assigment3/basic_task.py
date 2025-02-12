@@ -1,35 +1,53 @@
-import os
+"""
+https://universe.roboflow.com/maria-team-1/chair-detection-2-14i7o-kzmv1-ldkzl-r7tml
+"""
 
+import os
+from datetime import datetime
+
+import albumentations as A
+import cv2
 import torch
 import torch.nn.functional as F
-import torchvision.transforms as T
+from albumentations.pytorch.transforms import ToTensorV2
 from matplotlib import patches
 from matplotlib import pyplot as plt
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
+from torch.utils.tensorboard import SummaryWriter
 from torchvision.datasets import CocoDetection
 from torchvision.models import MobileNet_V3_Large_Weights, mobilenet_v3_large
+from torchvision.ops import distance_box_iou_loss
+
+TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
+WRITER = SummaryWriter(f"logs/basic_{TIMESTAMP}")
 
 
 class SingleObjectCocoDataset(Dataset):
     def __init__(self, root, annFile, transform):
+        self.root = root
         self.coco = CocoDetection(root=root, annFile=annFile)
         self.transform = transform
+        self.ids = sorted(self.coco.coco.imgs.keys())
 
     def __len__(self):
         return len(self.coco)
 
     def __getitem__(self, idx):
-        img, targets = self.coco[idx]
+        coco = self.coco.coco
+        img_id = self.ids[idx]
+        path = coco.loadImgs(img_id)[0]["file_name"]
+        img = cv2.imread(str(os.path.join(self.root, path)), cv2.IMREAD_COLOR_RGB)
+
+        _, targets = self.coco[idx]
         target = targets[0]
         bbox = target["bbox"]
-        label = target["category_id"]
-        img, bbox = self.transform(img, bbox)
+        # bbox = [element-1 if element >0 else element for element in bbox]
+        result = self.transform(image=img, bboxes=[bbox], class_labels=["Chair"])
         return (
-            img,
-            torch.tensor(bbox, dtype=torch.float32),
-            torch.tensor(label, dtype=torch.long),
+            result["image"],
+            torch.as_tensor(result["bboxes"][0], dtype=torch.float32),
+            torch.as_tensor(target["category_id"], dtype=torch.long),
         )
 
 
@@ -53,33 +71,46 @@ class BB_model(nn.Module):
 
         self.bb = nn.Sequential(
             nn.BatchNorm1d(in_features),
-            nn.Linear(in_features, 4),
+            nn.Linear(in_features, 128),
+            nn.ReLU(),
+            nn.Linear(128, 4),
         )
 
     def forward(self, x):
         x = self.features(x)
-        x = F.relu(x)
         x = self.avgpool(x)
         x = x.view(x.shape[0], -1)
         return self.classifier(x), self.bb(x)
 
 
-def train_epocs(model, optimizer, train_dl, val_dl, epochs=10, C=1000):
+def train_epocs(model, optimizer, train_dl, val_dl, epochs=10):
     idx = 0
     for i in range(epochs):
         model.train()
         total = 0
         sum_loss = 0
-        for x, y_bb, y_class in train_dl:
+        for index, (x, y_bb, y_class) in enumerate(train_dl):
             batch = y_class.shape[0]
             x = x.to(device).float()
             y_class = y_class.to(device)
             y_bb = y_bb.to(device).float()
             out_class, out_bb = model(x)
-            loss_class = F.cross_entropy(out_class, y_class, reduction="sum")
-            loss_bb = F.l1_loss(out_bb, y_bb, reduction="none").sum(1)
-            loss_bb = loss_bb.sum()
-            loss = loss_class + loss_bb / C
+            loss_class = F.cross_entropy(out_class, y_class, reduction="mean")
+            out_bb_transformed = torch.cat(
+                [out_bb[:, :2], out_bb[:, :2] + out_bb[:, 2:]],
+                dim=1,
+            )
+            y_bb_transformed = torch.cat(
+                [y_bb[:, :2], y_bb[:, :2] + y_bb[:, 2:]],
+                dim=1,
+            )
+            loss_bb = distance_box_iou_loss(
+                out_bb_transformed,
+                y_bb_transformed,
+                reduction="mean",
+            )
+            loss = loss_class + loss_bb
+            WRITER.add_scalar("Loss/train", loss, i * len(train_dl) + index + 1)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -87,15 +118,15 @@ def train_epocs(model, optimizer, train_dl, val_dl, epochs=10, C=1000):
             total += batch
             sum_loss += loss.item()
         train_loss = sum_loss / total
-        val_loss, val_acc = val_metrics(model, valid_dl, C)
+        val_loss, val_acc = val_metrics(model, valid_dl)
         print(
             "train_loss %.3f val_loss %.3f val_acc %.3f"
-            % (train_loss, val_loss, val_acc)
+            % (train_loss, val_loss, val_acc),
         )
     return sum_loss / total
 
 
-def val_metrics(model, valid_dl, C=1000):
+def val_metrics(model, valid_dl):
     model.eval()
     total = 0
     sum_loss = 0
@@ -106,10 +137,18 @@ def val_metrics(model, valid_dl, C=1000):
         y_class = y_class.to(device)
         y_bb = y_bb.to(device).float()
         out_class, out_bb = model(x)
-        loss_class = F.cross_entropy(out_class, y_class, reduction="sum")
-        loss_bb = F.l1_loss(out_bb, y_bb, reduction="none").sum(1)
-        loss_bb = loss_bb.sum()
-        loss = loss_class + loss_bb / C
+        loss_class = F.cross_entropy(out_class, y_class, reduction="mean")
+        out_bb_transformed = torch.cat(
+            [out_bb[:, :2], out_bb[:, :2] + out_bb[:, 2:]],
+            dim=1,
+        )
+        y_bb_transformed = torch.cat([y_bb[:, :2], y_bb[:, :2] + y_bb[:, 2:]], dim=1)
+        loss_bb = distance_box_iou_loss(
+            out_bb_transformed,
+            y_bb_transformed,
+            reduction="mean",
+        )
+        loss = loss_class + loss_bb
         _, pred = torch.max(out_class, 1)
         correct += pred.eq(y_class).sum().item()
         sum_loss += loss.item()
@@ -122,19 +161,19 @@ def update_optimizer(optimizer, lr):
         param_group["lr"] = lr
 
 
-def resize_transform(image, bbox, size=(640, 640)):
-    w, h = image.size
-    image = T.Resize(size)(image)
-    new_w, new_h = size
-    scale_x = new_w / w
-    scale_y = new_h / h
-    bbox = [bbox[0] * scale_x, bbox[1] * scale_y, bbox[2] * scale_x, bbox[3] * scale_y]
-    transform = transforms.Compose(
-        [transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))]
-    )
-
-    image = transform(image)  # Converts image to [0,1] range
-    return image, bbox
+transform = A.Compose(
+    [
+        A.Resize(height=640, width=640, p=1),
+        A.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ToTensorV2(p=1),
+    ],
+    p=1.0,
+    bbox_params=A.BboxParams(
+        format="coco",
+        label_fields=["class_labels"],
+        clip=True,
+    ),
+)
 
 
 def visualize_predictions(model, dataset, device, num_images=5):
@@ -186,22 +225,28 @@ valid_ann = os.path.join(valid_path, "_annotations.coco.json")
 test_ann = os.path.join(test_path, "_annotations.coco.json")
 
 train_dataset = SingleObjectCocoDataset(
-    root=train_path, annFile=train_ann, transform=resize_transform
+    root=train_path,
+    annFile=train_ann,
+    transform=transform,
 )
 valid_dataset = SingleObjectCocoDataset(
-    root=valid_path, annFile=valid_ann, transform=resize_transform
+    root=valid_path,
+    annFile=valid_ann,
+    transform=transform,
 )
 test_dataset = SingleObjectCocoDataset(
-    root=test_path, annFile=test_ann, transform=resize_transform
+    root=test_path,
+    annFile=test_ann,
+    transform=transform,
 )
-batch_size = 32
+batch_size = 16
 train_dl = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 valid_dl = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
 test_dl = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 device = torch.device(
     "mps"
     if torch.backends.mps.is_available()
-    else ("cuda" if torch.cuda.is_available() else "cpu")
+    else ("cuda" if torch.cuda.is_available() else "cpu"),
 )
 model = BB_model().to(device)
 parameters = filter(lambda p: p.requires_grad, model.parameters())
