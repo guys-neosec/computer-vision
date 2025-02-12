@@ -139,8 +139,7 @@ def train_epocs(model, optimizer, train_dl, val_dl, epochs=10):
         train_loss = sum_loss / total
         val_loss, val_acc = val_metrics(model, valid_dl)
         print(
-            "train_loss %.3f val_loss %.3f val_acc %.3f"
-            % (train_loss, val_loss, val_acc),
+            f"{i} train_loss {train_loss:.3f} val_loss {val_loss:.3f} val_acc {val_acc:.3f}",
         )
     return sum_loss / total
 
@@ -273,6 +272,8 @@ device = torch.device(
 model = BasicModel().to(device)
 parameters = filter(lambda p: p.requires_grad, model.parameters())
 optimizer = torch.optim.Adam(parameters)
-train_epocs(model, optimizer, train_dl, valid_dl, epochs=5)
+train_epocs(model, optimizer, train_dl, valid_dl, epochs=50)
 visualize_predictions(model, test_dataset, device, num_images=5)
+val_loss, val_acc = val_metrics(model, test_dl)
+print(f"Unseen Dataset val_loss {val_loss:.3f} val_acc {val_acc:.3f}")
 visualize_predictions(model, train_dataset, device, num_images=5)
