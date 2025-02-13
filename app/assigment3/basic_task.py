@@ -1,5 +1,6 @@
 """
 https://universe.roboflow.com/maria-team-1/chair-detection-2-14i7o-kzmv1-ldkzl-r7tml
+Use coco annotations
 """
 
 import os
@@ -177,9 +178,23 @@ def update_optimizer(optimizer, lr):
 transform = A.Compose(
     [
         A.Resize(height=SIZE, width=SIZE, p=1),
-        A.ShiftScaleRotate(p=0.5),
+        A.ShiftScaleRotate(
+            shift_limit=0.0625,
+            scale_limit=0.1,
+            rotate_limit=15,
+            p=0.5,
+        ),
+        A.RandomSizedBBoxSafeCrop(width=SIZE, height=SIZE, erosion_rate=0.2, p=0.3),
         A.HorizontalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.2),
+        A.HueSaturationValue(
+            hue_shift_limit=20,
+            sat_shift_limit=30,
+            val_shift_limit=20,
+            p=0.3,
+        ),
+        A.GaussNoise(p=0.2),
+        A.MotionBlur(blur_limit=5, p=0.2),
         A.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
         ToTensorV2(p=1),
     ],
@@ -267,7 +282,8 @@ device = torch.device(
 model = BasicModel().to(device)
 parameters = filter(lambda p: p.requires_grad, model.parameters())
 optimizer = torch.optim.Adam(parameters)
-train_epocs(model, optimizer, train_dl, valid_dl, epochs=10)
+train_epocs(model, optimizer, train_dl, valid_dl, epochs=100)
+torch.save(model.state_dict(), "basic_model.pth")
 visualize_predictions(model, test_dataset, device, num_images=5)
 val_loss, val_acc = val_metrics(model, test_dl)
 print(f"Unseen Dataset val_loss {val_loss:.3f} val_acc {val_acc:.3f}")
