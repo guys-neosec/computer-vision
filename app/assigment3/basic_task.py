@@ -23,6 +23,7 @@ from torchvision.ops import (
 
 TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 WRITER = SummaryWriter(f"logs/basic_{TIMESTAMP}")
+SIZE = 640
 
 
 class SingleObjectCocoDataset(Dataset):
@@ -31,24 +32,26 @@ class SingleObjectCocoDataset(Dataset):
         self.coco = CocoDetection(root=root, annFile=annFile)
         self.transform = transform
         self.ids = sorted(self.coco.coco.imgs.keys())
+        # Only 1 chair in the frame!!
+        self.pictures = [pic for pic in self.coco if len(pic[1]) == 1]
 
     def __len__(self):
-        return len(self.coco)
+        return len(self.pictures)
 
     def __getitem__(self, idx):
         coco = self.coco.coco
-        img_id = self.ids[idx]
+        img_id = self.pictures[idx][1][0]["image_id"]
         path = coco.loadImgs(img_id)[0]["file_name"]
         img = cv2.imread(str(os.path.join(self.root, path)), cv2.IMREAD_COLOR_RGB)
 
-        _, targets = self.coco[idx]
+        _, targets = self.pictures[idx]
         target = targets[0]
         bbox = target["bbox"]
         # bbox = [element-1 if element >0 else element for element in bbox]
         result = self.transform(image=img, bboxes=[bbox], class_labels=["Chair"])
         return (
             result["image"],
-            torch.as_tensor(result["bboxes"][0], dtype=torch.float32),
+            torch.as_tensor(result["bboxes"][0], dtype=torch.float32) / SIZE,
             torch.as_tensor(target["category_id"], dtype=torch.long),
         )
 
@@ -64,27 +67,22 @@ class BasicModel(nn.Module):
             param.requires_grad = False
 
         self.cls_avgpool = nn.AdaptiveAvgPool2d((1, 1))
-
         in_features = mobilenet.classifier[0].in_features
         self.classifier = nn.Sequential(
             nn.BatchNorm1d(in_features),
             nn.Linear(in_features, 4),
         )
 
-        self.bb_conv = nn.Sequential(
-            nn.Conv2d(in_features, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(),
-            nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(),
-        )
-
-        self.bb_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.bb_fc = nn.Sequential(
-            nn.Linear(128, 128),
-            nn.ReLU(),
+        self.bb_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(in_features, 256),
+            nn.LeakyReLU(negative_slope=0.01),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.LeakyReLU(negative_slope=0.01),
             nn.Linear(128, 4),
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
@@ -94,10 +92,7 @@ class BasicModel(nn.Module):
         cls_features = torch.flatten(cls_features, 1)
         cls_out = self.classifier(cls_features)
 
-        bb_features = self.bb_conv(features)
-        bb_features = self.bb_pool(bb_features)
-        bb_features = torch.flatten(bb_features, 1)
-        bb_out = self.bb_fc(bb_features)
+        bb_out = self.bb_head(features)
 
         return cls_out, bb_out
 
@@ -181,7 +176,7 @@ def update_optimizer(optimizer, lr):
 
 transform = A.Compose(
     [
-        A.Resize(height=640, width=640, p=1),
+        A.Resize(height=SIZE, width=SIZE, p=1),
         A.ShiftScaleRotate(p=0.5),
         A.HorizontalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.2),
@@ -205,8 +200,8 @@ def visualize_predictions(model, dataset, device, num_images=5):
         with torch.no_grad():
             pred_cls, pred_bbox = model(input_img)
         pred_cls = torch.argmax(pred_cls, dim=1).item()
-        pred_bbox = pred_bbox.squeeze(0).cpu().numpy()
-        ground_bbox = bbox.squeeze(0).cpu().numpy()
+        pred_bbox = pred_bbox.squeeze(0).cpu().numpy() * SIZE
+        ground_bbox = bbox.squeeze(0).cpu().numpy() * SIZE
         img_np = image.cpu().numpy().transpose(1, 2, 0).clip(0, 1)
         fig, ax = plt.subplots(1)
         rect_predict = patches.Rectangle(
@@ -272,7 +267,7 @@ device = torch.device(
 model = BasicModel().to(device)
 parameters = filter(lambda p: p.requires_grad, model.parameters())
 optimizer = torch.optim.Adam(parameters)
-train_epocs(model, optimizer, train_dl, valid_dl, epochs=50)
+train_epocs(model, optimizer, train_dl, valid_dl, epochs=10)
 visualize_predictions(model, test_dataset, device, num_images=5)
 val_loss, val_acc = val_metrics(model, test_dl)
 print(f"Unseen Dataset val_loss {val_loss:.3f} val_acc {val_acc:.3f}")
