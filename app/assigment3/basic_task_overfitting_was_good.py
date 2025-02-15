@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +23,7 @@ elif torch.backends.mps.is_available():
 else:
     DEVICE = torch.device("cpu")
 torch.autograd.set_detect_anomaly(True)
+torch.backends.nnpack.enabled = False
 
 
 def get_train_transform() -> A.Compose:
@@ -100,27 +99,27 @@ def collate_fn(
 class SingleBoxMobileNetV3(nn.Module):
     def __init__(self) -> None:
         super().__init__()
+        # Load the backbone and freeze its parameters initially
         backbone = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.DEFAULT)
         self.features = backbone.features
-        # Freeze backbone parameters
         for p in self.features.parameters():
             p.requires_grad = False
 
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Sequential(
             nn.Flatten(),
-            # In original 4096
             nn.Linear(960, 496),
-            # nn.Dropout(0.0),
             nn.LeakyReLU(0.1),
             nn.Linear(496, 4),
             nn.Sigmoid(),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.features(x)
+        # Since the backbone is frozen by default, we can disable gradient tracking here.
+        with torch.no_grad():
+            x = self.features(x)
         x = self.pool(x).view(x.size(0), -1)
-        out = self.fc(x)  # (B,6)
+        out = self.fc(x)
         return out
 
 
@@ -147,58 +146,6 @@ def coco_to_corners(boxes: torch.Tensor) -> torch.Tensor:
         )
     x, y, w, h = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
     return torch.stack([x, y, x + w, y + h], dim=1)
-
-
-def train_full_dataset(
-    model: nn.Module,
-    dataloader: DataLoader,
-    device: torch.device,
-    writer: SummaryWriter,
-    epochs: int = 50,
-    lr: float = 1e-3,
-) -> None:
-    model.to(device)
-    model.train()
-    optimizer = optim.Adam(
-        filter(lambda layer: layer.requires_grad, model.parameters()),
-        lr=lr,
-    )
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode="min",
-        factor=0.1,
-        patience=10,
-        verbose=True,
-    )
-
-    global_step = 0
-    for epoch in range(epochs):
-        epoch_loss = 0.0
-        for images, ground_bbox in dataloader:
-            images = images.to(device)
-
-            # Use yolo_to_corners for predictions since the model outputs YOLO format.
-            box_preds = yolo_to_corners(model(images)).to(device) * SIZE
-            # Use coco_to_corners for ground truth boxes.
-            gt_boxes = coco_to_corners(ground_bbox).to(device) * SIZE
-
-            loss_iou = generalized_box_iou_loss(box_preds, gt_boxes, reduction="mean")
-            loss_l1 = F.smooth_l1_loss(box_preds, gt_boxes)
-            loss = loss_iou + loss_l1
-
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            epoch_loss += loss.item()
-            avg_epoch_loss = epoch_loss / len(dataloader)
-            scheduler.step(avg_epoch_loss)
-            writer.add_scalar("Batch/Loss", loss.item(), global_step)
-            global_step += 1
-
-        avg_epoch_loss = epoch_loss / len(dataloader)
-        writer.add_scalar("Epoch/Train_Loss", avg_epoch_loss, epoch)
-        print(f"Epoch {epoch + 1}/{epochs} Loss: {avg_epoch_loss:.4f}")
 
 
 def yolo_to_corners(boxes: torch.Tensor) -> torch.Tensor:
@@ -234,6 +181,58 @@ def yolo_to_corners(boxes: torch.Tensor) -> torch.Tensor:
     raise ValueError("Input tensor must have shape (4,) or (N, 4).")
 
 
+def train_full_dataset(
+    model: nn.Module,
+    dataloader: DataLoader,
+    device: torch.device,
+    writer: SummaryWriter,
+    epochs: int = 50,
+    lr: float = 1e-3,
+) -> None:
+    model.to(device)
+    model.train()
+    optimizer = optim.Adam(
+        filter(lambda layer: layer.requires_grad, model.parameters()),
+        lr=lr,
+    )
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.1,
+        patience=10,
+        verbose=True,
+    )
+
+    global_step = 0
+    for epoch in range(epochs):
+        epoch_loss = 0.0
+        for images, ground_bbox in dataloader:
+            images = images.float().to(device)
+
+            # Convert model output (YOLO format) to corners format
+            box_preds = yolo_to_corners(model(images)).to(device) * SIZE
+            # Convert ground truth boxes (COCO format) to corners format
+            gt_boxes = coco_to_corners(ground_bbox).to(device) * SIZE
+
+            loss_iou = generalized_box_iou_loss(box_preds, gt_boxes, reduction="mean")
+            loss_l1 = F.smooth_l1_loss(box_preds, gt_boxes)
+            loss = loss_iou + loss_l1
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            writer.add_scalar("Batch/Loss", loss.item(), global_step)
+            global_step += 1
+
+        avg_epoch_loss = epoch_loss / len(dataloader)
+        writer.add_scalar("Epoch/Train_Loss", avg_epoch_loss, epoch)
+        # Step the scheduler once per epoch using the average loss
+        scheduler.step(avg_epoch_loss)
+        print(f"Epoch {epoch + 1}/{epochs} Loss: {avg_epoch_loss:.4f}")
+
+
 def visualize_sample(
     model: nn.Module,
     sample: tuple[torch.Tensor, torch.Tensor],
@@ -241,7 +240,7 @@ def visualize_sample(
 ) -> None:
     model.eval()
     image, boxes_tensor = sample
-    input_img = image.unsqueeze(0).to(device)
+    input_img = image.float().unsqueeze(0).to(device)
     with torch.no_grad():
         # Convert model output using yolo_to_corners.
         pred_box = yolo_to_corners(model(input_img))[0].cpu() * SIZE
@@ -291,21 +290,14 @@ def visualize_test_set(
 
 
 def main(overfit_one_image: bool = False) -> None:
-    base_path = "/Users/gstrauss/Downloads/Personal/Face Detection.v24-resize416x416-aug3x-traintestsplitonly.coco"
+    base_path = "/root/projects/computer-vision"
     train_path = Path(base_path) / "train"
     train_ann = train_path / "_annotations.coco.json"
-    test_path = Path(base_path) / "test"
-    test_ann = test_path / "_annotations.coco.json"
 
     train_dataset = SingleBoxDataset(
         root=str(train_path),
         ann_file=str(train_ann),
         transform=get_train_transform(),
-    )
-    test_dataset = SingleBoxDataset(
-        root=str(test_path),
-        ann_file=str(test_ann),
-        transform=get_test_transform(),
     )
 
     if overfit_one_image:
@@ -313,22 +305,15 @@ def main(overfit_one_image: bool = False) -> None:
 
     train_loader = DataLoader(
         train_dataset,
-        batch_size=32 if overfit_one_image else 16,
+        batch_size=32,
         shuffle=True,
         num_workers=0 if overfit_one_image else 4,
         collate_fn=collate_fn,
     )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=32,
-        shuffle=False,
-        num_workers=4,
-        collate_fn=collate_fn,
-    )
 
+    # Create the model and unfreeze selected backbone blocks for full-dataset training.
     model = SingleBoxMobileNetV3()
-    # unfreeze_backbone_blocks(model, start_block=10, end_block=16)
-
+    unfreeze_backbone_blocks(model, start_block=10, end_block=16)
     model = model.to(DEVICE)
 
     writer = SummaryWriter(log_dir="runs/face_experiment")
@@ -337,11 +322,11 @@ def main(overfit_one_image: bool = False) -> None:
         train_loader,
         DEVICE,
         writer,
-        epochs=500 if overfit_one_image else 200,
+        epochs=500,
         lr=1e-3,
     )
-    # writer.add_scalar("Epoch/Validation_Loss", val_loss)
-    test_indices = [0]
+    torch.save(model.state_dict(), "model.pth")
+    test_indices = [0, 1, 2, 3, 4, 5]
     visualize_test_set(model, train_dataset, DEVICE, test_indices)
 
     writer.close()
