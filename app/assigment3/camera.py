@@ -1,96 +1,45 @@
-import albumentations as A
-import cv2
 import torch
-from albumentations.pytorch import ToTensorV2
-from torchvision import models
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.models as models
+import torchvision.ops as ops
+import cv2
+import numpy as np
+import argparse
+import math
+from loguru import logger
 
-# Device and anchors (must match training)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-anchors = torch.tensor(
-    [[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]],
-    dtype=torch.float32,
-    device=device,
-)
+device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+anchors = torch.tensor([[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]], dtype=torch.float32, device=device)
 num_anchors = anchors.shape[0]
+num_classes = 1
 
-
-# Model definition (must match training)
-class YOLOHead(torch.nn.Module):
+class YOLOHead(nn.Module):
     def __init__(self, in_channels, num_outputs):
-        super(YOLOHead, self).__init__()
-        self.conv = torch.nn.Sequential(
-            torch.nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
-            torch.nn.BatchNorm2d(32),
-            torch.nn.ReLU(),
-            torch.nn.Conv2d(32, num_outputs, kernel_size=1),
+        super().__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            nn.Conv2d(32, num_outputs, kernel_size=1)
         )
-
     def forward(self, x):
         return self.conv(x)
 
-
-class YOLOFaceDetector(torch.nn.Module):
-    def __init__(self, num_anchors):
-        super(YOLOFaceDetector, self).__init__()
+class YOLOFaceDetector(nn.Module):
+    def __init__(self, num_anchors, num_classes):
+        super().__init__()
         mobilenet = models.mobilenet_v3_large(pretrained=True)
         self.backbone = mobilenet.features
-        self.conv_reduce = torch.nn.Conv2d(960, 256, kernel_size=1)
-        self.head = YOLOHead(256, num_anchors * 5)
+        self.conv_reduce = nn.Conv2d(960, 256, kernel_size=1)
+        self.head = YOLOHead(256, num_anchors * (5 + num_classes))
         self.num_anchors = num_anchors
-
+        self.num_classes = num_classes
     def forward(self, x):
         features = self.backbone(x)
         features = self.conv_reduce(features)
         out = self.head(features)
         return out
-
-
-# Load the trained model
-model = YOLOFaceDetector(num_anchors=num_anchors).to(device)
-model.load_state_dict(
-    torch.load("trained_yolo_face_detector_anchor_nms.pth", map_location=device),
-)
-model.eval()
-
-# Inference transform (must match training input size and normalization)
-inference_transform = A.Compose(
-    [
-        A.Resize(256, 256),
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ToTensorV2(),
-    ],
-)
-
-
-# Helper functions
-def box_cxcywh_to_xyxy(box):
-    cx, cy, w, h = box[0], box[1], box[2], box[3]
-    return cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
-
-
-def compute_giou_single(pred_box, gt_box, eps=1e-6):
-    p_x1, p_y1, p_x2, p_y2 = box_cxcywh_to_xyxy(pred_box)
-    g_x1, g_y1, g_x2, g_y2 = box_cxcywh_to_xyxy(gt_box)
-    inter_x1 = torch.max(p_x1, g_x1)
-    inter_y1 = torch.max(p_y1, g_y1)
-    inter_x2 = torch.min(p_x2, g_x2)
-    inter_y2 = torch.min(p_y2, g_y2)
-    inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(
-        inter_y2 - inter_y1,
-        min=0,
-    )
-    area_p = (p_x2 - p_x1) * (p_y2 - p_y1)
-    area_g = (g_x2 - g_x1) * (g_y2 - g_y1)
-    union = area_p + area_g - inter_area + eps
-    iou = inter_area / union
-    c_x1 = torch.min(p_x1, g_x1)
-    c_y1 = torch.min(p_y1, g_y1)
-    c_x2 = torch.max(p_x2, g_x2)
-    c_y2 = torch.max(p_y2, g_y2)
-    area_c = (c_x2 - c_x1) * (c_y2 - c_y1) + eps
-    giou = iou - ((area_c - union) / area_c)
-    return giou
-
 
 def decode_predictions(pred, grid_x, grid_y, anchor, grid_w, grid_h):
     tx = torch.sigmoid(pred[1])
@@ -103,98 +52,110 @@ def decode_predictions(pred, grid_x, grid_y, anchor, grid_w, grid_h):
     bh = anchor[1] * torch.exp(th)
     return torch.stack([cx, cy, bw, bh])
 
-
-def non_max_suppression(predictions, iou_thresh=0.5):
-    if len(predictions) == 0:
-        return []
-    predictions = sorted(predictions, key=lambda x: x[4], reverse=True)
-    final_preds = []
-    while predictions:
-        best = predictions.pop(0)
-        final_preds.append(best)
-        predictions = [
-            pred
-            for pred in predictions
-            if compute_giou_single(
-                torch.as_tensor(best[:4]),
-                torch.as_tensor(pred[:4]),
-            ).item()
-            < iou_thresh
-        ]
-    return final_preds
-
-
-# Inference loop from webcam
-cap = cv2.VideoCapture(0)
-
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-
-    orig_frame = frame.copy()
+def preprocess_frame(frame, input_size=256):
     orig_h, orig_w = frame.shape[:2]
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    resized = cv2.resize(rgb, (input_size, input_size))
+    resized = resized.astype(np.float32) / 255.0
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
+    norm = (resized - mean) / std
+    norm = norm.transpose(2, 0, 1)
+    image_tensor = torch.tensor(norm, dtype=torch.float32).unsqueeze(0)
+    return image_tensor.to(device), (orig_w, orig_h)
 
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    transformed = inference_transform(image=rgb_frame)
-    input_tensor = transformed["image"].unsqueeze(0).to(device)
-
+def run_inference(model, image_tensor, orig_size, conf_threshold=0.5, nms_threshold=0.4):
+    orig_w, orig_h = orig_size
+    model.eval()
     with torch.no_grad():
-        output = model(input_tensor)
-    bs, ch, grid_h, grid_w = output.shape
-    output = output.view(bs, num_anchors, 5, grid_h, grid_w)
-    output = output.permute(0, 3, 4, 1, 2).contiguous()
-    output = output[0]
+        output = model(image_tensor)
+        bs, _, grid_h, grid_w = output.shape
+        output = output.view(bs, num_anchors, (5 + num_classes), grid_h, grid_w)
+        output = output.permute(0, 3, 4, 1, 2).contiguous()
+        detections = []
+        output = output[0]
+        for i in range(grid_h):
+            for j in range(grid_w):
+                for a in range(num_anchors):
+                    pred = output[i, j, a]
+                    obj_score = torch.sigmoid(pred[0]).item()
+                    if obj_score > conf_threshold:
+                        box = decode_predictions(pred, j, i, anchors[a], grid_w, grid_h)
+                        box = box.cpu().numpy()
+                        cx, cy, bw, bh = box
+                        cx *= orig_w
+                        cy *= orig_h
+                        bw *= orig_w
+                        bh *= orig_h
+                        x1 = cx - bw / 2
+                        y1 = cy - bh / 2
+                        x2 = cx + bw / 2
+                        y2 = cy + bh / 2
+                        class_logits = pred[5:]
+                        class_prob = F.softmax(class_logits, dim=0)
+                        class_conf, class_pred = torch.max(class_prob, dim=0)
+                        score = obj_score * class_conf.item()
+                        detections.append({
+                            'box': [x1, y1, x2, y2],
+                            'score': score,
+                            'class': int(class_pred.item())
+                        })
+        if len(detections) == 0:
+            return []
+        boxes = torch.tensor([d['box'] for d in detections], dtype=torch.float32)
+        scores = torch.tensor([d['score'] for d in detections], dtype=torch.float32)
+        keep = ops.nms(boxes, scores, nms_threshold)
+        final_detections = [detections[idx] for idx in keep.tolist()]
+        return final_detections
 
-    predictions = []
-    conf_thresh = 0.3  # Lower threshold to capture more detections
+def draw_detections(frame, detections):
+    img = frame.copy()
+    for det in detections:
+        x1, y1, x2, y2 = list(map(int, det['box']))
+        label = f"Cls {det['class']}:{det['score']:.2f}"
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(img, label, (x1, max(y1 - 10, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    return img
 
-    for i in range(grid_h):
-        for j in range(grid_w):
-            for a in range(num_anchors):
-                pred = output[i, j, a]
-                conf = torch.sigmoid(pred[0]).item()
-                if conf > conf_thresh:
-                    box = decode_predictions(pred, j, i, anchors[a], grid_w, grid_h)
-                    predictions.append(
-                        [
-                            box[0].item(),
-                            box[1].item(),
-                            box[2].item(),
-                            box[3].item(),
-                            conf,
-                        ],
-                    )
+def parse_args():
+    parser = argparse.ArgumentParser(description="YOLO Face Detector Inference (Webcam/Video)")
+    parser.add_argument("--source", type=str, default="0", help="Video source: '0' for webcam or a file path")
+    parser.add_argument("--weights", type=str, default="trained_yolo_face_detector_anchor_nms.pth", help="Path to model weights")
+    parser.add_argument("--conf_threshold", type=float, default=0.4, help="Confidence threshold")
+    parser.add_argument("--nms_threshold", type=float, default=0.4, help="NMS threshold")
+    parser.add_argument("--input_size", type=int, default=256, help="Input size for the model")
+    return parser.parse_args()
 
-    final_preds = non_max_suppression(predictions, iou_thresh=0.5)
+def main():
+    args = parse_args()
+    model = YOLOFaceDetector(num_anchors=num_anchors, num_classes=num_classes).to(device)
+    state_dict = torch.load(args.weights, map_location=device)
+    model.load_state_dict(state_dict)
+    logger.info("Model loaded.")
+    try:
+        source = int(args.source)
+    except ValueError:
+        source = args.source
+    cap = cv2.VideoCapture(source)
+    if not cap.isOpened():
+        logger.error(f"Cannot open video source: {args.source}")
+        exit(1)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            logger.info("No frame received, ending stream.")
+            break
+        image_tensor, orig_size = preprocess_frame(frame, input_size=args.input_size)
+        detections = run_inference(model, image_tensor, orig_size, conf_threshold=args.conf_threshold, nms_threshold=args.nms_threshold)
+        if len(detections) > 0:
+            for det in detections:
+                logger.info(f"Detection: Box={det['box']}, Score={det['score']:.2f}, Class={det['class']}")
+        frame_out = draw_detections(frame, detections)
+        cv2.imshow("YOLO Face Detector", frame_out)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+    cap.release()
+    cv2.destroyAllWindows()
 
-    # Draw detections on the original frame.
-    for det in final_preds:
-        cx, cy, bw, bh, conf = det
-        x = int((cx - bw / 2) * 256)
-        y = int((cy - bh / 2) * 256)
-        w = int(bw * 256)
-        h = int(bh * 256)
-        scale_x = orig_w / 256
-        scale_y = orig_h / 256
-        x1 = int(x * scale_x)
-        y1 = int(y * scale_y)
-        x2 = int((x + w) * scale_x)
-        y2 = int((y + h) * scale_y)
-        cv2.rectangle(orig_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(
-            orig_frame,
-            f"{conf:.2f}",
-            (x1, y1 - 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 0),
-            2,
-        )
-
-    cv2.imshow("Webcam Face Detection", orig_frame)
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
-
-cap.release()
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()
