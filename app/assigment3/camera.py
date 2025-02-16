@@ -1,18 +1,19 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torchvision.models as models
-import torchvision.ops as ops
+import os
+import math
 import cv2
 import numpy as np
-import argparse
-import math
-from loguru import logger
+import torch
+import torch.nn.functional as F
+from torch import nn
+from torchvision import models
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 
 device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
+num_classes = 2
 anchors = torch.tensor([[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]], dtype=torch.float32, device=device)
 num_anchors = anchors.shape[0]
-num_classes = 1
+CONF_THRESH = 0.0
 
 class YOLOHead(nn.Module):
     def __init__(self, in_channels, num_outputs):
@@ -29,7 +30,7 @@ class YOLOHead(nn.Module):
 class YOLOFaceDetector(nn.Module):
     def __init__(self, num_anchors, num_classes):
         super().__init__()
-        mobilenet = models.mobilenet_v3_large(pretrained=True)
+        mobilenet = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.DEFAULT)
         self.backbone = mobilenet.features
         self.conv_reduce = nn.Conv2d(960, 256, kernel_size=1)
         self.head = YOLOHead(256, num_anchors * (5 + num_classes))
@@ -52,110 +53,66 @@ def decode_predictions(pred, grid_x, grid_y, anchor, grid_w, grid_h):
     bh = anchor[1] * torch.exp(th)
     return torch.stack([cx, cy, bw, bh])
 
-def preprocess_frame(frame, input_size=256):
+transform = A.Compose([
+    A.Resize(256, 256),
+    A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+    ToTensorV2()
+])
+
+model = YOLOFaceDetector(num_anchors, num_classes).to(device)
+model.load_state_dict(torch.load("trained_yolo_face_detector_anchor_nms.pth", map_location=device))
+model.eval()
+
+def inference_frame(frame, model, transform, conf_thresh=CONF_THRESH):
     orig_h, orig_w = frame.shape[:2]
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    resized = cv2.resize(rgb, (input_size, input_size))
-    resized = resized.astype(np.float32) / 255.0
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
-    norm = (resized - mean) / std
-    norm = norm.transpose(2, 0, 1)
-    image_tensor = torch.tensor(norm, dtype=torch.float32).unsqueeze(0)
-    return image_tensor.to(device), (orig_w, orig_h)
-
-def run_inference(model, image_tensor, orig_size, conf_threshold=0.5, nms_threshold=0.4):
-    orig_w, orig_h = orig_size
-    model.eval()
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    transformed = transform(image=frame_rgb)
+    inp = transformed["image"].unsqueeze(0).to(device)
     with torch.no_grad():
-        output = model(image_tensor)
-        bs, _, grid_h, grid_w = output.shape
-        output = output.view(bs, num_anchors, (5 + num_classes), grid_h, grid_w)
-        output = output.permute(0, 3, 4, 1, 2).contiguous()
-        detections = []
-        output = output[0]
-        for i in range(grid_h):
-            for j in range(grid_w):
-                for a in range(num_anchors):
-                    pred = output[i, j, a]
-                    obj_score = torch.sigmoid(pred[0]).item()
-                    if obj_score > conf_threshold:
-                        box = decode_predictions(pred, j, i, anchors[a], grid_w, grid_h)
-                        box = box.cpu().numpy()
-                        cx, cy, bw, bh = box
-                        cx *= orig_w
-                        cy *= orig_h
-                        bw *= orig_w
-                        bh *= orig_h
-                        x1 = cx - bw / 2
-                        y1 = cy - bh / 2
-                        x2 = cx + bw / 2
-                        y2 = cy + bh / 2
-                        class_logits = pred[5:]
-                        class_prob = F.softmax(class_logits, dim=0)
-                        class_conf, class_pred = torch.max(class_prob, dim=0)
-                        score = obj_score * class_conf.item()
-                        detections.append({
-                            'box': [x1, y1, x2, y2],
-                            'score': score,
-                            'class': int(class_pred.item())
-                        })
-        if len(detections) == 0:
-            return []
-        boxes = torch.tensor([d['box'] for d in detections], dtype=torch.float32)
-        scores = torch.tensor([d['score'] for d in detections], dtype=torch.float32)
-        keep = ops.nms(boxes, scores, nms_threshold)
-        final_detections = [detections[idx] for idx in keep.tolist()]
-        return final_detections
+        out = model(inp)
+    B, C, grid_h, grid_w = out.shape
+    out = out.view(B, num_anchors, 5 + num_classes, grid_h, grid_w)
+    out = out.permute(0, 3, 4, 1, 2).contiguous()
+    out = out[0]
+    boxes = []
+    for i in range(grid_h):
+        for j in range(grid_w):
+            for a in range(num_anchors):
+                pred = out[i, j, a]
+                obj_score = torch.sigmoid(pred[0]).item()
+                cls_logits = pred[5:]
+                cls_prob = torch.softmax(cls_logits, dim=0)
+                cls_label = torch.argmax(cls_prob).item()
+                score = obj_score * cls_prob[cls_label].item()
+                if score > conf_thresh and cls_label == 1:
+                    pred_box = decode_predictions(pred, j, i, anchors[a], grid_w, grid_h)
+                    pred_box = pred_box.cpu().numpy()
+                    cx, cy, bw, bh = pred_box
+                    x1 = int((cx - bw/2) * orig_w)
+                    y1 = int((cy - bh/2) * orig_h)
+                    x2 = int((cx + bw/2) * orig_w)
+                    y2 = int((cy + bh/2) * orig_h)
+                    boxes.append((x1, y1, x2, y2, score))
+    return boxes
 
-def draw_detections(frame, detections):
-    img = frame.copy()
-    for det in detections:
-        x1, y1, x2, y2 = list(map(int, det['box']))
-        label = f"Cls {det['class']}:{det['score']:.2f}"
-        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(img, label, (x1, max(y1 - 10, 0)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-    return img
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="YOLO Face Detector Inference (Webcam/Video)")
-    parser.add_argument("--source", type=str, default="0", help="Video source: '0' for webcam or a file path")
-    parser.add_argument("--weights", type=str, default="trained_yolo_face_detector_anchor_nms.pth", help="Path to model weights")
-    parser.add_argument("--conf_threshold", type=float, default=0.4, help="Confidence threshold")
-    parser.add_argument("--nms_threshold", type=float, default=0.4, help="NMS threshold")
-    parser.add_argument("--input_size", type=int, default=256, help="Input size for the model")
-    return parser.parse_args()
-
-def main():
-    args = parse_args()
-    model = YOLOFaceDetector(num_anchors=num_anchors, num_classes=num_classes).to(device)
-    state_dict = torch.load(args.weights, map_location=device)
-    model.load_state_dict(state_dict)
-    logger.info("Model loaded.")
-    try:
-        source = int(args.source)
-    except ValueError:
-        source = args.source
+def run_video(source=0):
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
-        logger.error(f"Cannot open video source: {args.source}")
-        exit(1)
+        print("Error: Could not open video source.")
+        return
     while True:
         ret, frame = cap.read()
         if not ret:
-            logger.info("No frame received, ending stream.")
             break
-        image_tensor, orig_size = preprocess_frame(frame, input_size=args.input_size)
-        detections = run_inference(model, image_tensor, orig_size, conf_threshold=args.conf_threshold, nms_threshold=args.nms_threshold)
-        if len(detections) > 0:
-            for det in detections:
-                logger.info(f"Detection: Box={det['box']}, Score={det['score']:.2f}, Class={det['class']}")
-        frame_out = draw_detections(frame, detections)
-        cv2.imshow("YOLO Face Detector", frame_out)
+        boxes = inference_frame(frame, model, transform, conf_thresh=CONF_THRESH)
+        for (x1, y1, x2, y2, score) in boxes:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 2)
+            cv2.putText(frame, f"person: {score:.2f}", (x1, max(y1-10, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,255,0), 2)
+        cv2.imshow("Video Inference", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
     cap.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main()
+    run_video(source=0)
