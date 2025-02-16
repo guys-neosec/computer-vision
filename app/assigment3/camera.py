@@ -87,7 +87,7 @@ transform = A.Compose(
 
 # Open the webcam
 cap = cv2.VideoCapture(0)
-conf_threshold = 0.5
+conf_threshold = 0.4
 
 while True:
     ret, frame = cap.read()

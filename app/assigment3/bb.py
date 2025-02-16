@@ -132,6 +132,9 @@ def build_target(bboxes, grid_h, grid_w, batch_size, device):
         gt = bboxes[i]
         cell_x = int(gt[0].item() * grid_w)
         cell_y = int(gt[1].item() * grid_h)
+        # Make sure cell indices are within bounds
+        cell_x = min(cell_x, grid_w - 1)
+        cell_y = min(cell_y, grid_h - 1)
         target[i, 0, cell_y, cell_x] = 1
         target[i, 1, cell_y, cell_x] = gt[0].item() * grid_w - cell_x
         target[i, 2, cell_y, cell_x] = gt[1].item() * grid_h - cell_y
@@ -146,7 +149,7 @@ def compute_loss(
     device,
     lambda_bbox=1.0,
     current_epoch=0,
-    warmup_epochs=5,
+    warmup_epochs=20,
 ):
     batch_size = output.shape[0]
     grid_h, grid_w = output.shape[2], output.shape[3]
@@ -175,20 +178,20 @@ def compute_loss(
             cell_y = y_ind.item()
             pred_cx = (cell_x + pred_x) / grid_w
             pred_cy = (cell_y + pred_y) / grid_h
-            pred_box = torch.tensor([pred_cx, pred_cy, pred_w, pred_h], device=device)
             target_x = target[i, 1, y_ind, x_ind]
             target_y = target[i, 2, y_ind, x_ind]
             target_w = target[i, 3, y_ind, x_ind]
             target_h = target[i, 4, y_ind, x_ind]
             gt_cx = (cell_x + target_x) / grid_w
             gt_cy = (cell_y + target_y) / grid_h
-            gt_box = torch.tensor([gt_cx, gt_cy, target_w, target_h], device=device)
+            pred_box = torch.stack([pred_cx, pred_cy, pred_w, pred_h])
+            gt_box = torch.stack([gt_cx, gt_cy, target_w, target_h])
             # GIoU loss component: 1 - giou
             giou = compute_giou_single(pred_box, gt_box)
-            # Optionally, clamp giou to avoid extremely large loss when giou is negative:
+            # Clamp giou to avoid extremely large loss when negative:
             giou = torch.clamp(giou, min=0)
             giou_loss_total += 1 - giou
-            # Smooth L1 loss component on box coordinates
+            # Smooth L1 loss on box coordinates
             l1_loss_total += F.smooth_l1_loss(pred_box, gt_box, reduction="mean")
             count += 1
 
@@ -199,13 +202,14 @@ def compute_loss(
         giou_loss = 0.0
         l1_loss = 0.0
 
-    # Compute a blending factor alpha that goes from 0 to 1 over warmup_epochs
+    # Blending factor: gradually shift from L1 to GIoU over warmup_epochs
     alpha = min(1.0, current_epoch / warmup_epochs)
-    # Early epochs: lean more on L1 loss; later epochs: lean more on GIoU loss.
     bbox_loss = (1 - alpha) * l1_loss + alpha * giou_loss
 
     total_loss = loss_conf + lambda_bbox * bbox_loss
-    return total_loss
+
+    # Return total loss and individual components for logging
+    return total_loss, loss_conf, giou_loss, l1_loss
 
 
 # Functions to freeze/unfreeze backbone for fine-tuning
@@ -219,7 +223,18 @@ def unfreeze_backbone(model):
         param.requires_grad = True
 
 
-# Training function with scheduler and backbone freezing/unfreezing
+def check_gradients(model):
+    # Log gradient norms for key layers to ensure gradients are flowing
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            if param.grad is None:
+                logger.warning(f"{name} has no gradient!")
+            else:
+                grad_norm = param.grad.norm().item()
+                logger.info(f"{name} grad norm: {grad_norm:.4f}")
+
+
+# Training function with scheduler, logging, gradient checking and backbone freezing/unfreezing
 def train(model, dataloader, optimizer, scheduler, epochs, device, freeze_epochs=5):
     model.train()
     for epoch in range(epochs):
@@ -229,21 +244,41 @@ def train(model, dataloader, optimizer, scheduler, epochs, device, freeze_epochs
         elif epoch == freeze_epochs:
             unfreeze_backbone(model)
             logger.info("Backbone unfrozen for fine-tuning.")
-        total_loss = 0.0
+        total_loss_epoch = 0.0
+        total_loss_conf = 0.0
+        total_giou_loss = 0.0
+        total_l1_loss = 0.0
         for imgs, bboxes in dataloader:
             imgs = imgs.to(device)
             bboxes = bboxes.to(device)
             optimizer.zero_grad()
-            output = model(imgs)
-            loss = compute_loss(output, bboxes, device)
+            loss, loss_conf, giou_loss, l1_loss = compute_loss(
+                output=model(imgs),
+                bboxes=bboxes,
+                device=device,
+                current_epoch=epoch,
+            )
             loss.backward()
             optimizer.step()
-            total_loss += loss.item()
-        avg_loss = total_loss / len(dataloader)
+
+            total_loss_epoch += loss.item()
+            total_loss_conf += loss_conf.item()
+            total_giou_loss += giou_loss.item()
+            total_l1_loss += l1_loss.item()
+
+        avg_loss = total_loss_epoch / len(dataloader)
+        avg_conf = total_loss_conf / len(dataloader)
+        avg_giou = total_giou_loss / len(dataloader)
+        avg_l1 = total_l1_loss / len(dataloader)
         scheduler.step()
         logger.info(
-            f"Epoch {epoch + 1}/{epochs}, Loss: {avg_loss:.4f}, LR: {scheduler.get_last_lr()[0]:.6f}",
+            f"Epoch {epoch + 1}/{epochs}, Total Loss: {avg_loss:.4f}, "
+            f"Conf Loss: {avg_conf:.4f}, GIoU Loss: {avg_giou:.4f}, L1 Loss: {avg_l1:.4f}, "
+            f"LR: {scheduler.get_last_lr()[0]:.6f}",
         )
+
+        # Check gradients of key layers after each epoch
+        check_gradients(model)
 
 
 if __name__ == "__main__":
@@ -265,13 +300,15 @@ if __name__ == "__main__":
         "/Users/gstrauss/Downloads/Personal/Face Detection.v24-resize416x416-aug3x-traintestsplitonly.coco/train/_annotations.coco.json",
         transform,
     )
-    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4)
 
     model = YOLOFaceDetector().to(device)
+    # Reduced learning rate to 1e-4
     optimizer = optim.AdamW(model.parameters(), lr=1e-3)
-    epochs = 20
+    epochs = 50
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
+    # Use freeze_epochs=5 to unfreeze the backbone earlier
     train(model, train_loader, optimizer, scheduler, epochs, device, freeze_epochs=5)
 
     # Save the trained model
