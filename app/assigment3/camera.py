@@ -11,7 +11,10 @@ from albumentations.pytorch import ToTensorV2
 
 device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
 num_classes = 2
-anchors = torch.tensor([[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]], dtype=torch.float32, device=device)
+anchors = torch.tensor([[0.05, 0.05],
+                        [0.1, 0.1],
+                        [0.2, 0.2],
+                        [0.3, 0.3]], dtype=torch.float32, device=device)
 num_anchors = anchors.shape[0]
 CONF_THRESH = 0.0
 
@@ -54,7 +57,7 @@ def decode_predictions(pred, grid_x, grid_y, anchor, grid_w, grid_h):
     return torch.stack([cx, cy, bw, bh])
 
 transform = A.Compose([
-    A.Resize(256, 256),
+    A.Resize(400, 400),
     A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ToTensorV2()
 ])

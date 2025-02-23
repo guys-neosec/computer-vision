@@ -17,7 +17,10 @@ from torchvision.models import MobileNet_V3_Large_Weights
 num_classes = 2
 
 device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-anchors = torch.tensor([[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]], dtype=torch.float32, device=device)
+anchors = torch.tensor([[0.05, 0.05],
+                        [0.1, 0.1],
+                        [0.2, 0.2],
+                        [0.3, 0.3]], dtype=torch.float32, device=device)
 num_anchors = anchors.shape[0]
 
 
@@ -300,7 +303,7 @@ def train(model, dataloader, optimizer, scheduler, epochs, device, writer, freez
 
 if __name__ == "__main__":
     transform = A.Compose([
-        A.Resize(256, 256),
+        A.Resize(400, 400),
         A.HorizontalFlip(p=0.5),
         A.RandomRotate90(p=0.5),
         A.RandomBrightnessContrast(p=0.5),
