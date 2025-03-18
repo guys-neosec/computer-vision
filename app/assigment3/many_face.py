@@ -52,7 +52,7 @@ class FaceDataset(Dataset):
                 if len(parts) != 5:
                     continue  # Skip any malformed lines
 
-                label = 1
+                label = int(parts[0])
                 bbox = list(map(float, parts[1:]))
                 bboxes.append(bbox)
                 labels.append(label)

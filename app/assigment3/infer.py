@@ -9,15 +9,41 @@ from torchvision import models
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+num_classes = 3
+
 device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-num_classes = 13
-anchors = torch.tensor([[0.03874847, 0.06450036],
-                        [0.07185585, 0.13543336],
-                        [0.05429659, 0.07867859],
-                        [0.05361066, 0.10593599],
-                        [0.03141959, 0.0445926 ]], dtype=torch.float32, device=device)
+anchors = torch.tensor([[0.63066907 ,0.39734325],
+                        [0.84080636 ,0.83308687],
+                        [0.44301002 ,0.59707842],
+                        [0.22850459 ,0.20988701],
+                        [0.8448287  ,0.51072606],
+                        [0.22718694 ,0.459403  ],
+                        [0.80876488 ,0.25842262],
+                        [0.65927155 ,0.65566495],
+                        [0.54515325 ,0.21731671],
+                        [0.24488351 ,0.74377441],
+                        [0.50000774 ,0.85840037],
+                        [0.40410871 ,0.35211747]], dtype=torch.float32, device=device)
 num_anchors = anchors.shape[0]
-CONF_THRESH = 0.2
+CONF_THRESH = 0.0
+
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(SEBlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
 
 class YOLOHead(nn.Module):
     def __init__(self, in_channels, num_outputs):
@@ -26,6 +52,7 @@ class YOLOHead(nn.Module):
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
+            SEBlock(32),  # Adding SE attention module
             nn.Conv2d(32, num_outputs, kernel_size=1)
         )
     def forward(self, x):
@@ -64,7 +91,7 @@ transform = A.Compose([
 ])
 
 model = YOLOFaceDetector(num_anchors, num_classes).to(device)
-model.load_state_dict(torch.load("app/assigment3/chess_model_20.pth", map_location=device))
+model.load_state_dict(torch.load("face_banana_model_10.pth", map_location=device))
 model.eval()
 import torchvision.ops as ops
 
@@ -95,8 +122,7 @@ def inference_frame(frame, model, transform, conf_thresh=CONF_THRESH):
                 cls_prob = torch.softmax(cls_logits, dim=0)
                 cls_label = torch.argmax(cls_prob).item()
                 score = obj_score * cls_prob[cls_label].item()
-
-                if score > conf_thresh and cls_label != 0:  # skip background=0
+                if score > conf_thresh and cls_label!=0:
                     pred_box = decode_predictions(pred, j, i, anchors[a], grid_w, grid_h)
                     pred_box = pred_box.cpu().numpy()
                     cx, cy, bw, bh = pred_box
@@ -113,7 +139,7 @@ def inference_frame(frame, model, transform, conf_thresh=CONF_THRESH):
     if len(boxes_raw) > 0:
         boxes_xyxy = torch.tensor([b[:4] for b in boxes_raw], dtype=torch.float32)
         scores = torch.tensor([b[4] for b in boxes_raw], dtype=torch.float32)
-        keep_indices = ops.nms(boxes_xyxy, scores, iou_threshold=0.7)  # adjust IoU as needed
+        keep_indices = ops.nms(boxes_xyxy, scores, iou_threshold=0.4)  # adjust IoU as needed
 
         for idx in keep_indices:
             # Rebuild the detection tuple with the original info
@@ -146,4 +172,4 @@ def run_video(source=0):
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    run_video("chess4.mp4")
+    run_video("parlament.webm")

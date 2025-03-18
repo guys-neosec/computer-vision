@@ -92,6 +92,23 @@ def collate_fn(batch):
     return images, list(boxes), list(labels)
 
 
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(SEBlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        return x * y
+
 class YOLOHead(nn.Module):
     def __init__(self, in_channels, num_outputs):
         super().__init__()
@@ -99,6 +116,7 @@ class YOLOHead(nn.Module):
             nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
             nn.BatchNorm2d(32),
             nn.ReLU(),
+            SEBlock(32),  # Adding SE attention module
             nn.Conv2d(32, num_outputs, kernel_size=1)
         )
 
@@ -106,22 +124,22 @@ class YOLOHead(nn.Module):
         return self.conv(x)
 
 
-class YOLOFaceDetector(nn.Module):
-    def __init__(self, num_anchors, num_classes):
-        super().__init__()
-        mobilenet = models.mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.DEFAULT)
-        self.backbone = mobilenet.features
-        self.conv_reduce = nn.Conv2d(960, 256, kernel_size=1)
-        # Output per anchor: 5 (objectness and bbox parameters) + num_classes (classification)
-        self.head = YOLOHead(256, num_anchors * (5 + num_classes))
-        self.num_anchors = num_anchors
-        self.num_classes = num_classes
+    class YOLOFaceDetector(nn.Module):
+        def __init__(self, num_anchors, num_classes):
+            super().__init__()
+            mobilenet = models.mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.DEFAULT)
+            self.backbone = mobilenet.features
+            self.conv_reduce = nn.Conv2d(960, 256, kernel_size=1)
+            # Output per anchor: 5 (objectness and bbox parameters) + num_classes (classification)
+            self.head = YOLOHead(256, num_anchors * (5 + num_classes))
+            self.num_anchors = num_anchors
+            self.num_classes = num_classes
 
-    def forward(self, x):
-        features = self.backbone(x)
-        features = self.conv_reduce(features)
-        out = self.head(features)
-        return out
+        def forward(self, x):
+            features = self.backbone(x)
+            features = self.conv_reduce(features)
+            out = self.head(features)
+            return out
 
 
 def focal_loss(inputs, targets, alpha=0.25, gamma=2.0):
@@ -191,7 +209,7 @@ def build_target(bboxes, labels, grid_h, grid_w, batch_size, device, anchors, nu
             best_iou = 0.0
             best_anchor = 0
             assigned_anchors = []
-            iou_treshold = 0.5
+            iou_treshold = 0.2
             for a in range(num_anchors):
                 anchor_w, anchor_h = anchors[a].tolist()
                 inter = min(bw, anchor_w) * min(bh, anchor_h)
