@@ -1,26 +1,37 @@
-﻿import json
-import os
+import json
 import math
-import torch
-import torch.nn.functional as F
-from torch import nn, optim
-from torch.utils.data import DataLoader, Dataset
-from torchvision import models
+import os
+
 import albumentations as A
 import cv2
+import torch
+import torch.nn.functional as F
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
+from torch import nn, optim
+from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
+from torchvision import models
 from torchvision.models import MobileNet_V3_Large_Weights
 
 num_classes = 13
 
-device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu"))
-anchors = torch.tensor([[0.03874847, 0.06450036],
-                        [0.07185585, 0.13543336],
-                        [0.05429659, 0.07867859],
-                        [0.05361066, 0.10593599],
-                        [0.03141959, 0.0445926 ]], dtype=torch.float32, device=device)
+device = torch.device(
+    "cuda"
+    if torch.cuda.is_available()
+    else ("mps" if torch.backends.mps.is_available() else "cpu")
+)
+anchors = torch.tensor(
+    [
+        [0.03874847, 0.06450036],
+        [0.07185585, 0.13543336],
+        [0.05429659, 0.07867859],
+        [0.05361066, 0.10593599],
+        [0.03141959, 0.0445926],
+    ],
+    dtype=torch.float32,
+    device=device,
+)
 num_anchors = anchors.shape[0]
 
 
@@ -37,8 +48,8 @@ class FaceDataset(Dataset):
             annotations.setdefault(ann["image_id"], []).append(ann)
         self.data = []
         for img in ann_data["images"]:
-            if 'file_name' not in img:
-              continue
+            if "file_name" not in img:
+                continue
             img_id = img["id"]
             anns = annotations.get(img_id, [])
             valid_bboxes = []
@@ -48,9 +59,12 @@ class FaceDataset(Dataset):
                 # Use image dimensions from the img dict (make sure these keys exist)
                 img_w, img_h = img["width"], img["height"]
                 # Check if bbox is within the image bounds.
-                if (bbox[0] < 0 or bbox[1] < 0 or
-                    bbox[0] + bbox[2] > img_w or
-                    bbox[1] + bbox[3] > img_h):
+                if (
+                    bbox[0] < 0
+                    or bbox[1] < 0
+                    or bbox[0] + bbox[2] > img_w
+                    or bbox[1] + bbox[3] > img_h
+                ):
                     logger.warning(f"Skipping invalid bbox {bbox} in image {img_id}")
                     continue
                 valid_bboxes.append(bbox)
@@ -66,10 +80,10 @@ class FaceDataset(Dataset):
         img_info, bboxes, labels = self.data[index]
         img_path = os.path.join(self.img_dir, img_info["file_name"])
         try:
-          image = cv2.imread(img_path)
+            image = cv2.imread(img_path)
         except Exception as e:
-          print(img_info)
-          raise e
+            print(img_info)
+            raise e
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         transformed = self.transform(image=image, bboxes=bboxes, labels=labels)
         image = transformed["image"]
@@ -87,7 +101,7 @@ class FaceDataset(Dataset):
 
 
 def collate_fn(batch):
-    images, boxes, labels = zip(*batch)
+    images, boxes, labels = zip(*batch, strict=False)
     images = torch.stack(images, 0)
     return images, list(boxes), list(labels)
 
@@ -100,7 +114,7 @@ class SEBlock(nn.Module):
             nn.Linear(channels, channels // reduction, bias=False),
             nn.ReLU(inplace=True),
             nn.Linear(channels // reduction, channels, bias=False),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
@@ -108,6 +122,7 @@ class SEBlock(nn.Module):
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
         return x * y
+
 
 class YOLOHead(nn.Module):
     def __init__(self, in_channels, num_outputs):
@@ -117,29 +132,31 @@ class YOLOHead(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(),
             SEBlock(32),  # Adding SE attention module
-            nn.Conv2d(32, num_outputs, kernel_size=1)
+            nn.Conv2d(32, num_outputs, kernel_size=1),
         )
 
     def forward(self, x):
         return self.conv(x)
 
 
-    class YOLOFaceDetector(nn.Module):
-        def __init__(self, num_anchors, num_classes):
-            super().__init__()
-            mobilenet = models.mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.DEFAULT)
-            self.backbone = mobilenet.features
-            self.conv_reduce = nn.Conv2d(960, 256, kernel_size=1)
-            # Output per anchor: 5 (objectness and bbox parameters) + num_classes (classification)
-            self.head = YOLOHead(256, num_anchors * (5 + num_classes))
-            self.num_anchors = num_anchors
-            self.num_classes = num_classes
+class YOLOFaceDetector(nn.Module):
+    def __init__(self, num_anchors, num_classes):
+        super().__init__()
+        mobilenet = models.mobilenet_v3_large(
+            weights=MobileNet_V3_Large_Weights.DEFAULT
+        )
+        self.backbone = mobilenet.features
+        self.conv_reduce = nn.Conv2d(960, 256, kernel_size=1)
+        # Output per anchor: 5 (objectness and bbox parameters) + num_classes (classification)
+        self.head = YOLOHead(256, num_anchors * (5 + num_classes))
+        self.num_anchors = num_anchors
+        self.num_classes = num_classes
 
-        def forward(self, x):
-            features = self.backbone(x)
-            features = self.conv_reduce(features)
-            out = self.head(features)
-            return out
+    def forward(self, x):
+        features = self.backbone(x)
+        features = self.conv_reduce(features)
+        out = self.head(features)
+        return out
 
 
 def focal_loss(inputs, targets, alpha=0.25, gamma=2.0):
@@ -166,7 +183,9 @@ def compute_giou_single(pred_box, gt_box, eps=1e-6):
     inter_y1 = torch.max(p_y1, g_y1)
     inter_x2 = torch.min(p_x2, g_x2)
     inter_y2 = torch.min(p_y2, g_y2)
-    inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(inter_y2 - inter_y1, min=0)
+    inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(
+        inter_y2 - inter_y1, min=0
+    )
     area_p = (p_x2 - p_x1) * (p_y2 - p_y1)
     area_g = (g_x2 - g_x1) * (g_y2 - g_y1)
     union = area_p + area_g - inter_area + eps
@@ -193,14 +212,28 @@ def decode_predictions(pred, grid_x, grid_y, anchor, grid_w, grid_h):
     return torch.stack([cx, cy, bw, bh])
 
 
-def build_target(bboxes, labels, grid_h, grid_w, batch_size, device, anchors, num_anchors, num_classes):
+def build_target(
+    bboxes,
+    labels,
+    grid_h,
+    grid_w,
+    batch_size,
+    device,
+    anchors,
+    num_anchors,
+    num_classes,
+):
     # target_box: (batch, grid_h, grid_w, num_anchors, 5) for objectness and bbox regression.
-    target_box = torch.zeros((batch_size, grid_h, grid_w, num_anchors, 5), device=device)
+    target_box = torch.zeros(
+        (batch_size, grid_h, grid_w, num_anchors, 5), device=device
+    )
     # target_cls: (batch, grid_h, grid_w, num_anchors) for classification.
     # Initialize with 0 (background). For anchors with a face, we will set the value to 1.
-    target_cls = torch.zeros((batch_size, grid_h, grid_w, num_anchors), dtype=torch.long, device=device)
+    target_cls = torch.zeros(
+        (batch_size, grid_h, grid_w, num_anchors), dtype=torch.long, device=device
+    )
     for i in range(batch_size):
-        for face, lab in zip(bboxes[i], labels[i]):
+        for face, lab in zip(bboxes[i], labels[i], strict=False):
             cx, cy, bw, bh = face.tolist()
             cell_x = int(cx * grid_w)
             cell_y = int(cy * grid_h)
@@ -224,22 +257,31 @@ def build_target(bboxes, labels, grid_h, grid_w, batch_size, device, anchors, nu
             if not assigned_anchors:
                 assigned_anchors.append(best_anchor)
             for anchor_idx in assigned_anchors:
-              anchor_w, anchor_h = anchors[anchor_idx].tolist()
-              t_x = cx * grid_w - cell_x
-              t_y = cy * grid_h - cell_y
-              t_w = math.log(bw / (anchor_w + 1e-6) + 1e-6)
-              t_h = math.log(bh / (anchor_h + 1e-6) + 1e-6)
-              target_box[i, cell_y, cell_x, anchor_idx, 0] = 1  # objectness
-              target_box[i, cell_y, cell_x, anchor_idx, 1] = t_x
-              target_box[i, cell_y, cell_x, anchor_idx, 2] = t_y
-              target_box[i, cell_y, cell_x, anchor_idx, 3] = t_w
-              target_box[i, cell_y, cell_x, anchor_idx, 4] = t_h
-              target_cls[i, cell_y, cell_x, anchor_idx] = lab
+                anchor_w, anchor_h = anchors[anchor_idx].tolist()
+                t_x = cx * grid_w - cell_x
+                t_y = cy * grid_h - cell_y
+                t_w = math.log(bw / (anchor_w + 1e-6) + 1e-6)
+                t_h = math.log(bh / (anchor_h + 1e-6) + 1e-6)
+                target_box[i, cell_y, cell_x, anchor_idx, 0] = 1  # objectness
+                target_box[i, cell_y, cell_x, anchor_idx, 1] = t_x
+                target_box[i, cell_y, cell_x, anchor_idx, 2] = t_y
+                target_box[i, cell_y, cell_x, anchor_idx, 3] = t_w
+                target_box[i, cell_y, cell_x, anchor_idx, 4] = t_h
+                target_cls[i, cell_y, cell_x, anchor_idx] = lab
 
     return target_box, target_cls
 
 
-def compute_loss(output, bboxes, labels, device, anchors, num_classes, lambda_bbox=1.0, lambda_cls=1.0):
+def compute_loss(
+    output,
+    bboxes,
+    labels,
+    device,
+    anchors,
+    num_classes,
+    lambda_bbox=1.0,
+    lambda_cls=1.0,
+):
     batch_size = output.shape[0]
     grid_h, grid_w = output.shape[2], output.shape[3]
     num_anchors = anchors.shape[0]
@@ -247,8 +289,17 @@ def compute_loss(output, bboxes, labels, device, anchors, num_classes, lambda_bb
     output = output.view(batch_size, num_anchors, 5 + num_classes, grid_h, grid_w)
     output = output.permute(0, 3, 4, 1, 2).contiguous()
 
-    target_box, target_cls = build_target(bboxes, labels, grid_h, grid_w, batch_size, device, anchors, num_anchors,
-                                          num_classes)
+    target_box, target_cls = build_target(
+        bboxes,
+        labels,
+        grid_h,
+        grid_w,
+        batch_size,
+        device,
+        anchors,
+        num_anchors,
+        num_classes,
+    )
     # Objectness loss using focal loss
     pred_obj = output[..., 0]
     loss_obj = focal_loss(pred_obj, target_box[..., 0])
@@ -261,7 +312,9 @@ def compute_loss(output, bboxes, labels, device, anchors, num_classes, lambda_bb
         for idx in inds:
             gy, gx, anchor_idx = idx.tolist()
             pred = output[b, gy, gx, anchor_idx]
-            pred_box = decode_predictions(pred, gx, gy, anchors[anchor_idx], grid_w, grid_h)
+            pred_box = decode_predictions(
+                pred, gx, gy, anchors[anchor_idx], grid_w, grid_h
+            )
             t = target_box[b, gy, gx, anchor_idx]
             gt_cx = (gx + t[1]) / grid_w
             gt_cy = (gy + t[2]) / grid_h
@@ -270,9 +323,11 @@ def compute_loss(output, bboxes, labels, device, anchors, num_classes, lambda_bb
             gt_h = anchor_wh[1] * math.exp(t[4].item())
             gt_w_tensor = torch.as_tensor(gt_w, device=device, dtype=gt_cx.dtype)
             gt_h_tensor = torch.as_tensor(gt_h, device=device, dtype=gt_cx.dtype)
-            gt_box = torch.stack([gt_cx.detach(), gt_cy.detach(), gt_w_tensor, gt_h_tensor])
+            gt_box = torch.stack(
+                [gt_cx.detach(), gt_cy.detach(), gt_w_tensor, gt_h_tensor]
+            )
             giou = compute_giou_single(pred_box, gt_box)
-            giou_loss_total += (1 - giou)
+            giou_loss_total += 1 - giou
             count += 1
     giou_loss = giou_loss_total / count if count > 0 else 0.0
 
@@ -304,7 +359,9 @@ def unfreeze_backbone(model):
 #                 logger.info(f"{name} grad norm: {param.grad.norm().item():.4f}")
 
 
-def train(model, dataloader, optimizer, scheduler, epochs, device, writer, freeze_epochs=5):
+def train(
+    model, dataloader, optimizer, scheduler, epochs, device, writer, freeze_epochs=5
+):
     model.train()
     global_step = 0
     for epoch in range(epochs):
@@ -321,13 +378,19 @@ def train(model, dataloader, optimizer, scheduler, epochs, device, writer, freez
             imgs = imgs.to(device)
             optimizer.zero_grad()
             out = model(imgs)
-            loss, obj_loss, giou_loss, cls_loss = compute_loss(out, bboxes, labels, device, anchors, num_classes)
+            loss, obj_loss, giou_loss, cls_loss = compute_loss(
+                out, bboxes, labels, device, anchors, num_classes
+            )
             loss.backward()
             optimizer.step()
             total_loss_epoch += loss.item()
             total_obj_loss += obj_loss.item()
-            total_giou_loss += giou_loss if isinstance(giou_loss, float) else giou_loss.item()
-            total_cls_loss += cls_loss if isinstance(cls_loss, float) else cls_loss.item()
+            total_giou_loss += (
+                giou_loss if isinstance(giou_loss, float) else giou_loss.item()
+            )
+            total_cls_loss += (
+                cls_loss if isinstance(cls_loss, float) else cls_loss.item()
+            )
             writer.add_scalar("Train/BatchLoss", loss.item(), global_step)
             global_step += 1
         avg_loss = total_loss_epoch / len(dataloader)
@@ -337,7 +400,8 @@ def train(model, dataloader, optimizer, scheduler, epochs, device, writer, freez
         scheduler.step()
         current_lr = scheduler.get_last_lr()[0]
         logger.info(
-            f"Epoch {epoch + 1}/{epochs}, Total Loss: {avg_loss:.4f}, Obj Loss: {avg_obj:.4f}, Giou Loss: {avg_giou:.4f}, Cls Loss: {avg_cls:.4f}, LR: {current_lr:.6f}")
+            f"Epoch {epoch + 1}/{epochs}, Total Loss: {avg_loss:.4f}, Obj Loss: {avg_obj:.4f}, Giou Loss: {avg_giou:.4f}, Cls Loss: {avg_cls:.4f}, LR: {current_lr:.6f}"
+        )
         writer.add_scalar("Train/EpochLoss", avg_loss, epoch)
         writer.add_scalar("Train/EpochObjLoss", avg_obj, epoch)
         writer.add_scalar("Train/EpochGiouLoss", avg_giou, epoch)
@@ -345,30 +409,34 @@ def train(model, dataloader, optimizer, scheduler, epochs, device, writer, freez
         writer.add_scalar("Train/LearningRate", current_lr, epoch)
         # check_gradients(model)
         if (epoch + 1) % 10 == 0:
-          model_path = f"/content/trained_yolo_face_detector_epoch_{epoch + 1}.pth"
-          torch.save(model.state_dict(), model_path)
-          logger.info(f"Saved model checkpoint at {model_path}")
+            model_path = f"/content/trained_yolo_face_detector_epoch_{epoch + 1}.pth"
+            torch.save(model.state_dict(), model_path)
+            logger.info(f"Saved model checkpoint at {model_path}")
 
 
 if __name__ == "__main__":
-    transform = A.Compose([
-        A.Resize(400, 400),
-        A.HorizontalFlip(p=0.5),
-        A.RandomRotate90(p=0.5),
-        A.RandomBrightnessContrast(p=0.5),
-        A.HueSaturationValue(p=0.5),
-        A.ColorJitter(p=0.5),
-        A.Blur(blur_limit=3, p=0.2),
-        A.CoarseDropout(p=0.3),
-        A.Affine(shear=(-10, 10), p=0.5, border_mode=cv2.BORDER_REFLECT),
-        A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
-        ToTensorV2()
-    ], bbox_params=A.BboxParams(format="coco", label_fields=["labels"]))
+    transform = A.Compose(
+        [
+            A.Resize(400, 400),
+            A.HorizontalFlip(p=0.5),
+            A.RandomRotate90(p=0.5),
+            A.RandomBrightnessContrast(p=0.5),
+            A.HueSaturationValue(p=0.5),
+            A.ColorJitter(p=0.5),
+            A.Blur(blur_limit=3, p=0.2),
+            A.CoarseDropout(p=0.3),
+            A.Affine(shear=(-10, 10), p=0.5, border_mode=cv2.BORDER_REFLECT),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            ToTensorV2(),
+        ],
+        bbox_params=A.BboxParams(format="coco", label_fields=["labels"]),
+    )
 
     train_dataset = FaceDataset(
         "/content/Chess-Pieces-Detection-1/train",
         "/content/Chess-Pieces-Detection-1/train/_annotations_subset.coco.json",
-        transform)
+        transform,
+    )
 
     train_loader = DataLoader(
         train_dataset,
@@ -376,14 +444,26 @@ if __name__ == "__main__":
         shuffle=True,
         num_workers=8,
         pin_memory=True,
-        collate_fn=collate_fn)
+        collate_fn=collate_fn,
+    )
 
-    model = YOLOFaceDetector(num_anchors=num_anchors, num_classes=num_classes).to(device)
+    model = YOLOFaceDetector(num_anchors=num_anchors, num_classes=num_classes).to(
+        device
+    )
     optimizer = optim.AdamW(model.parameters(), lr=1e-3)
     epochs = 50
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     writer = SummaryWriter()
 
-    train(model, train_loader, optimizer, scheduler, epochs, device, writer, freeze_epochs=10)
+    train(
+        model,
+        train_loader,
+        optimizer,
+        scheduler,
+        epochs,
+        device,
+        writer,
+        freeze_epochs=10,
+    )
     torch.save(model.state_dict(), "/content/trained_yolo_face_detector_anchor_nms.pth")
     writer.close()
