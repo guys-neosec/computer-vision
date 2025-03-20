@@ -8,36 +8,45 @@ import torch
 import torch.nn.functional as F
 from albumentations.pytorch import ToTensorV2
 from loguru import logger
-from sklearn.cluster import KMeans
 from torch import nn, optim
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import models
 from torchvision.models import MobileNet_V3_Large_Weights
 
-torch.backends.cudnn.benchmark = True
-
-num_classes = 7
+# ---------------------------
+# Global Settings and Anchors
+# ---------------------------
+num_classes = 2
 device = torch.device(
     "cuda"
     if torch.cuda.is_available()
     else ("mps" if torch.backends.mps.is_available() else "cpu"),
 )
+anchors = torch.tensor(
+    [
+        [0.63066907, 0.39734325],
+        [0.84080636, 0.83308687],
+        [0.44301002, 0.59707842],
+        [0.22850459, 0.20988701],
+        [0.8448287, 0.51072606],
+        [0.22718694, 0.459403],
+        [0.80876488, 0.25842262],
+        [0.65927155, 0.65566495],
+        [0.54515325, 0.21731671],
+        [0.24488351, 0.74377441],
+        [0.50000774, 0.85840037],
+        [0.40410871, 0.35211747],
+    ],
+    dtype=torch.float32,
+    device=device,
+)
+num_anchors = anchors.shape[0]
 
 
-def compute_anchors_from_dataset(dataset, num_anchors):
-    all_wh = []
-    for img_info, bboxes, labels in dataset.data:
-        img_w, img_h = img_info["width"], img_info["height"]
-        for bbox in bboxes:
-            bw = bbox[2] / img_w
-            bh = bbox[3] / img_h
-            all_wh.append([bw, bh])
-    kmeans = KMeans(n_clusters=num_anchors, random_state=0).fit(all_wh)
-    anchors = kmeans.cluster_centers_
-    return torch.tensor(anchors, dtype=torch.float32, device=device)
-
-
+# ---------------------------
+# Dataset and DataLoader
+# ---------------------------
 class FaceDataset(Dataset):
     def __init__(self, img_dir, ann_file, transform):
         with open(ann_file) as f:
@@ -101,6 +110,9 @@ def collate_fn(batch):
     return images, list(boxes), list(labels)
 
 
+# ---------------------------
+# Model Components
+# ---------------------------
 class SEBlock(nn.Module):
     def __init__(self, channels, reduction=16):
         super(SEBlock, self).__init__()
@@ -123,17 +135,17 @@ class YOLOHead(nn.Module):
     def __init__(self, in_channels, num_outputs):
         super().__init__()
         self.conv1 = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels // 2, kernel_size=3, padding=1),
-            nn.BatchNorm2d(in_channels // 2),
+            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
         )
         self.conv2 = nn.Sequential(
-            nn.Conv2d(in_channels // 2, in_channels // 4, kernel_size=3, padding=1),
-            nn.BatchNorm2d(in_channels // 4),
+            nn.Conv2d(64, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
-            SEBlock(in_channels // 4),
+            SEBlock(32),
         )
-        self.out_conv = nn.Conv2d(in_channels // 4, num_outputs, kernel_size=1)
+        self.out_conv = nn.Conv2d(32, num_outputs, kernel_size=1)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -148,8 +160,8 @@ class YOLOFaceDetector(nn.Module):
             weights=MobileNet_V3_Large_Weights.DEFAULT,
         )
         self.backbone = mobilenet.features
-        self.conv_reduce = nn.Conv2d(960, 384, kernel_size=1)
-        self.head = YOLOHead(384, num_anchors * (5 + num_classes))
+        self.conv_reduce = nn.Conv2d(960, 256, kernel_size=1)
+        self.head = YOLOHead(256, num_anchors * (5 + num_classes))
         self.num_anchors = num_anchors
         self.num_classes = num_classes
 
@@ -160,6 +172,9 @@ class YOLOFaceDetector(nn.Module):
         return out
 
 
+# ---------------------------
+# Helper Functions
+# ---------------------------
 def box_cxcywh_to_xyxy(box):
     cx, cy, w, h = box[0], box[1], box[2], box[3]
     x1 = cx - w / 2
@@ -170,18 +185,26 @@ def box_cxcywh_to_xyxy(box):
 
 
 def compute_giou_vectorized(pred_boxes, gt_boxes, eps=1e-6):
+    """
+    Compute GIoU in a vectorized way.
+    Both pred_boxes and gt_boxes are tensors of shape (N, 4) in (cx, cy, w, h) format.
+    """
+    # Convert boxes to (x1, y1, x2, y2)
     p_x1 = pred_boxes[:, 0] - pred_boxes[:, 2] / 2
     p_y1 = pred_boxes[:, 1] - pred_boxes[:, 3] / 2
     p_x2 = pred_boxes[:, 0] + pred_boxes[:, 2] / 2
     p_y2 = pred_boxes[:, 1] + pred_boxes[:, 3] / 2
+
     g_x1 = gt_boxes[:, 0] - gt_boxes[:, 2] / 2
     g_y1 = gt_boxes[:, 1] - gt_boxes[:, 3] / 2
     g_x2 = gt_boxes[:, 0] + gt_boxes[:, 2] / 2
     g_y2 = gt_boxes[:, 1] + gt_boxes[:, 3] / 2
+
     inter_x1 = torch.max(p_x1, g_x1)
     inter_y1 = torch.max(p_y1, g_y1)
     inter_x2 = torch.min(p_x2, g_x2)
     inter_y2 = torch.min(p_y2, g_y2)
+
     inter_area = torch.clamp(inter_x2 - inter_x1, min=0) * torch.clamp(
         inter_y2 - inter_y1,
         min=0,
@@ -190,11 +213,13 @@ def compute_giou_vectorized(pred_boxes, gt_boxes, eps=1e-6):
     area_g = (g_x2 - g_x1) * (g_y2 - g_y1)
     union = area_p + area_g - inter_area + eps
     iou = inter_area / union
+
     c_x1 = torch.min(p_x1, g_x1)
     c_y1 = torch.min(p_y1, g_y1)
     c_x2 = torch.max(p_x2, g_x2)
     c_y2 = torch.max(p_y2, g_y2)
     area_c = (c_x2 - c_x1) * (c_y2 - c_y1) + eps
+
     giou = iou - ((area_c - union) / area_c)
     return giou
 
@@ -239,7 +264,7 @@ def build_target(
             cell_x = min(cell_x, grid_w - 1)
             cell_y = min(cell_y, grid_h - 1)
             assigned_anchors = []
-            iou_threshold = 0.5
+            iou_threshold = 0.3
             best_iou = 0.0
             best_anchor = None
             for a in range(num_anchors):
@@ -259,8 +284,8 @@ def build_target(
                 t_y = cy * grid_h - cell_y
                 anchor_w = anchors[anchor_idx][0].item()
                 anchor_h = anchors[anchor_idx][1].item()
-                t_w = math.log(bw / (anchor_w + 1e-6))
-                t_h = math.log(bh / (anchor_h + 1e-6))
+                t_w = math.log(bw / (anchor_w + 1e-6) + 1e-6)
+                t_h = math.log(bh / (anchor_h + 1e-6) + 1e-6)
                 target_box[i, cell_y, cell_x, anchor_idx, 0] = 1
                 target_box[i, cell_y, cell_x, anchor_idx, 1] = t_x
                 target_box[i, cell_y, cell_x, anchor_idx, 2] = t_y
@@ -270,6 +295,9 @@ def build_target(
     return target_box, target_cls
 
 
+# ---------------------------
+# Optimized YOLO Loss Function
+# ---------------------------
 def yolo_loss_function(
     output,
     bboxes,
@@ -278,15 +306,20 @@ def yolo_loss_function(
     anchors,
     num_classes,
     lambda_coord=5,
-    lambda_noobj=1,
+    lambda_noobj=0.5,
     lambda_cls=1,
-    lambda_l1=1,
 ):
+    """
+    Optimized YOLO loss with vectorized coordinate loss computation.
+    """
     batch_size = output.shape[0]
     grid_h, grid_w = output.shape[2], output.shape[3]
     num_anchors = anchors.shape[0]
+    # Reshape and permute output to [B, grid_h, grid_w, num_anchors, 5+num_classes]
     output = output.view(batch_size, num_anchors, 5 + num_classes, grid_h, grid_w)
     output = output.permute(0, 3, 4, 1, 2).contiguous()
+
+    # Build targets
     target_box, target_cls = build_target(
         bboxes,
         labels,
@@ -298,34 +331,51 @@ def yolo_loss_function(
         num_anchors,
         num_classes,
     )
+
+    # Objectness and classification predictions
     pred_obj = torch.sigmoid(output[..., 0])
     pred_cls = output[..., 5:]
+
+    # Loss for objectness
     obj_mask = target_box[..., 0] == 1
     noobj_mask = target_box[..., 0] == 0
-    obj_loss = (
-        F.binary_cross_entropy(
-            pred_obj[obj_mask],
-            target_box[..., 0][obj_mask],
-            reduction="mean",
-        )
-        if obj_mask.sum() > 0
-        else 0.0
+    obj_loss = F.binary_cross_entropy(
+        pred_obj[obj_mask],
+        target_box[..., 0][obj_mask],
+        reduction="sum",
     )
-    noobj_loss = (
-        F.binary_cross_entropy(
-            pred_obj[noobj_mask],
-            target_box[..., 0][noobj_mask],
-            reduction="mean",
-        )
-        if noobj_mask.sum() > 0
-        else 0.0
+    noobj_loss = F.binary_cross_entropy(
+        pred_obj[noobj_mask],
+        target_box[..., 0][noobj_mask],
+        reduction="sum",
     )
-    indices = torch.nonzero(obj_mask, as_tuple=False)
+
+    # -------------------------------
+    # Vectorized coordinate loss:
+    # -------------------------------
+    indices = torch.nonzero(
+        obj_mask,
+        as_tuple=False,
+    )  # (N, 4): [batch, grid_y, grid_x, anchor]
     if indices.numel() > 0:
-        t = target_box[indices[:, 0], indices[:, 1], indices[:, 2], indices[:, 3]]
-        preds = output[indices[:, 0], indices[:, 1], indices[:, 2], indices[:, 3]]
+        t = target_box[
+            indices[:, 0],
+            indices[:, 1],
+            indices[:, 2],
+            indices[:, 3],
+        ]  # (N, 5)
+        preds = output[
+            indices[:, 0],
+            indices[:, 1],
+            indices[:, 2],
+            indices[:, 3],
+        ]  # (N, 5+num_classes)
+
+        # Extract grid cell coordinates as floats
         grid_y = indices[:, 1].float()
         grid_x = indices[:, 2].float()
+
+        # Decode predictions (only for coordinate part)
         tx = torch.sigmoid(preds[:, 1])
         ty = torch.sigmoid(preds[:, 2])
         tw = preds[:, 3]
@@ -339,22 +389,29 @@ def yolo_loss_function(
             [decoded_cx, decoded_cy, decoded_w, decoded_h],
             dim=1,
         )
+
+        # Build ground truth boxes
         gt_cx = (grid_x + t[:, 1]) / grid_w
         gt_cy = (grid_y + t[:, 2]) / grid_h
         gt_w = anchor_selected[:, 0] * torch.exp(t[:, 3])
         gt_h = anchor_selected[:, 1] * torch.exp(t[:, 4])
         gt_boxes = torch.stack([gt_cx, gt_cy, gt_w, gt_h], dim=1)
-        giou_loss = (1 - compute_giou_vectorized(decoded_preds, gt_boxes)).mean()
-        l1_loss = F.smooth_l1_loss(decoded_preds, gt_boxes, reduction="mean")
-        coord_loss = giou_loss + lambda_l1 * l1_loss
+
+        giou = compute_giou_vectorized(decoded_preds, gt_boxes)
+        coord_loss = (1 - giou).sum() / giou.numel()
     else:
         coord_loss = 0.0
+
+    # -------------------------------
+    # Classification loss:
+    # -------------------------------
     if obj_mask.sum() > 0:
         pred_cls_obj = pred_cls[obj_mask]
         target_cls_obj = target_cls[obj_mask].long()
-        class_loss = F.cross_entropy(pred_cls_obj, target_cls_obj, reduction="mean")
+        class_loss = F.cross_entropy(pred_cls_obj, target_cls_obj, reduction="sum")
     else:
         class_loss = 0.0
+
     total_loss = (
         lambda_coord * coord_loss
         + obj_loss
@@ -364,6 +421,9 @@ def yolo_loss_function(
     return total_loss, coord_loss, obj_loss, noobj_loss, class_loss
 
 
+# ---------------------------
+# Backbone Freezing Helpers
+# ---------------------------
 def freeze_backbone(model):
     for param in model.backbone.parameters():
         param.requires_grad = False
@@ -374,37 +434,31 @@ def unfreeze_backbone(model):
         param.requires_grad = True
 
 
-def train(
-    model,
-    dataloader,
-    optimizer,
-    epochs,
-    device,
-    writer,
-    anchors,
-    freeze_epochs=5,
-):
+# ---------------------------
+# Training Loop with Optional AMP
+# ---------------------------
+def train(model, dataloader, optimizer, epochs, device, writer, freeze_epochs=5):
     model.train()
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=epochs,
-        eta_min=1e-5,
-    )
     global_step = 0
+
     for epoch in range(epochs):
         if epoch < freeze_epochs:
             freeze_backbone(model)
         elif epoch == freeze_epochs:
             unfreeze_backbone(model)
             logger.info("Backbone unfrozen for fine-tuning.")
+
         total_loss_epoch = 0.0
         total_coord_loss = 0.0
         total_obj_loss = 0.0
         total_noobj_loss = 0.0
         total_cls_loss = 0.0
+
         for imgs, bboxes, labels in dataloader:
             imgs = imgs.to(device)
             optimizer.zero_grad()
+
+            # Standard forward pass without AMP
             out = model(imgs)
             loss, coord_loss, obj_loss, noobj_loss, cls_loss = yolo_loss_function(
                 out,
@@ -416,13 +470,12 @@ def train(
             )
             loss.backward()
             optimizer.step()
+
             total_loss_epoch += loss.item()
             total_coord_loss += (
                 coord_loss if isinstance(coord_loss, float) else coord_loss.item()
             )
-            total_obj_loss += (
-                obj_loss.item() if not isinstance(obj_loss, float) else obj_loss
-            )
+            total_obj_loss += obj_loss.item()
             total_noobj_loss += (
                 noobj_loss.item() if not isinstance(noobj_loss, float) else noobj_loss
             )
@@ -431,121 +484,48 @@ def train(
             )
             writer.add_scalar("Train/BatchLoss", loss.item(), global_step)
             global_step += 1
+
         avg_loss = total_loss_epoch / len(dataloader)
         avg_coord = total_coord_loss / len(dataloader)
         avg_obj = total_obj_loss / len(dataloader)
         avg_noobj = total_noobj_loss / len(dataloader)
         avg_cls = total_cls_loss / len(dataloader)
         logger.info(
-            f"Epoch {epoch + 1}/{epochs}, Total Loss: {avg_loss:.4f}, Coord Loss: {avg_coord:.4f}, Obj Loss: {avg_obj:.4f}, NoObj Loss: {avg_noobj:.4f}, Cls Loss: {avg_cls:.4f}",
+            f"Epoch {epoch + 1}/{epochs}, Total Loss: {avg_loss:.4f}, "
+            f"Coord Loss: {avg_coord:.4f}, Obj Loss: {avg_obj:.4f}, "
+            f"NoObj Loss: {avg_noobj:.4f}, Cls Loss: {avg_cls:.4f}",
         )
         writer.add_scalar("Train/EpochLoss", avg_loss, epoch)
         writer.add_scalar("Train/EpochCoordLoss", avg_coord, epoch)
         writer.add_scalar("Train/EpochObjLoss", avg_obj, epoch)
         writer.add_scalar("Train/EpochNoObjLoss", avg_noobj, epoch)
         writer.add_scalar("Train/EpochClsLoss", avg_cls, epoch)
-        scheduler.step()
 
 
-def evaluate_model(model, dataloader, device, anchors):
-    model.eval()
-    total_loss = 0.0
-    with torch.no_grad():
-        for imgs, bboxes, labels in dataloader:
-            imgs = imgs.to(device)
-            out = model(imgs)
-            loss, _, _, _, _ = yolo_loss_function(
-                out,
-                bboxes,
-                labels,
-                device,
-                anchors,
-                num_classes,
-            )
-            total_loss += loss.item()
-    avg_loss = total_loss / len(dataloader)
-    logger.info(f"Validation Loss: {avg_loss:.4f}")
-    return avg_loss
-
-
-def non_max_suppression(predictions, conf_threshold=0.5, iou_threshold=0.5):
-    boxes = predictions["boxes"]
-    scores = predictions["scores"]
-    indices = scores.argsort(descending=True)
-    keep = []
-    while indices.numel() > 0:
-        current = indices[0]
-        keep.append(current)
-        if indices.numel() == 1:
-            break
-        current_box = boxes[current].unsqueeze(0)
-        other_boxes = boxes[indices[1:]]
-        ious = compute_giou_vectorized(
-            current_box.repeat(other_boxes.size(0), 1),
-            other_boxes,
-        )
-        indices = indices[1:][ious < iou_threshold]
-    return keep
-
-
-def inference(model, image, anchors, conf_threshold=0.5, iou_threshold=0.5):
-    model.eval()
-    with torch.no_grad():
-        output = model(image.unsqueeze(0).to(device))
-    batch_size, _, grid_h, grid_w = output.shape
-    num_anchors = anchors.shape[0]
-    output = output.view(batch_size, num_anchors, 5 + num_classes, grid_h, grid_w)
-    output = output.permute(0, 3, 4, 1, 2).contiguous()[0]
-    boxes = []
-    scores = []
-    labels = []
-    for i in range(grid_h):
-        for j in range(grid_w):
-            for a in range(num_anchors):
-                pred = output[i, j, a]
-                obj_score = torch.sigmoid(pred[0])
-                if obj_score < conf_threshold:
-                    continue
-                tx = torch.sigmoid(pred[1])
-                ty = torch.sigmoid(pred[2])
-                tw = pred[3]
-                th = pred[4]
-                cx = (j + tx) / grid_w
-                cy = (i + ty) / grid_h
-                anchor_w, anchor_h = anchors[a]
-                bw = anchor_w * torch.exp(tw)
-                bh = anchor_h * torch.exp(th)
-                boxes.append(torch.tensor([cx, cy, bw, bh]))
-                scores.append(obj_score)
-                cls_prob = pred[5:]
-                label = torch.argmax(cls_prob)
-                labels.append(label)
-    if boxes:
-        boxes = torch.stack(boxes)
-        scores = torch.stack(scores)
-        keep_idx = non_max_suppression(
-            {"boxes": boxes, "scores": scores},
-            conf_threshold,
-            iou_threshold,
-        )
-        boxes = boxes[keep_idx]
-        scores = scores[keep_idx]
-        labels = torch.tensor(labels)[keep_idx]
-    return boxes, scores, labels
-
-
+# ---------------------------
+# Main Training Script
+# ---------------------------
 if __name__ == "__main__":
     transform = A.Compose(
         [
             A.Resize(400, 400),
+            A.HorizontalFlip(p=0.5),
+            A.RandomRotate90(p=0.5),
+            A.RandomBrightnessContrast(p=0.5),
+            A.HueSaturationValue(p=0.5),
+            A.ColorJitter(p=0.5),
+            A.Blur(blur_limit=3, p=0.2),
+            A.CoarseDropout(p=0.3),
+            A.Affine(shear=(-10, 10), p=0.5, border_mode=cv2.BORDER_REFLECT),
             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ToTensorV2(),
         ],
         bbox_params=A.BboxParams(format="coco", label_fields=["labels"]),
     )
+
     train_dataset = FaceDataset(
-        "/root/projects/computer-vision/Basketball.v2i/train",
-        "/root/projects/computer-vision/Basketball.v2i/train/_annotations.coco.json",
+        "/root/projects/computer-vision/Face-Detection-25/train",
+        "/root/projects/computer-vision/Face-Detection-25/train/_annotations.coco.json",
         transform,
     )
     train_loader = DataLoader(
@@ -556,23 +536,15 @@ if __name__ == "__main__":
         pin_memory=True,
         collate_fn=collate_fn,
     )
-    anchors = compute_anchors_from_dataset(train_dataset, num_anchors=9)
-    logger.info(anchors)
-    model = YOLOFaceDetector(num_anchors=anchors.shape[0], num_classes=num_classes).to(
+
+    model = YOLOFaceDetector(num_anchors=num_anchors, num_classes=num_classes).to(
         device,
     )
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
     epochs = 200
     writer = SummaryWriter()
-    train(
-        model,
-        train_loader,
-        optimizer,
-        epochs,
-        device,
-        writer,
-        anchors,
-        freeze_epochs=1,
-    )
-    torch.save(model.state_dict(), "basketball_dynamic_anchors.pth")
+
+    train(model, train_loader, optimizer, epochs, device, writer, freeze_epochs=5)
+
+    torch.save(model.state_dict(), "one_object_one_class.pth")
     writer.close()
