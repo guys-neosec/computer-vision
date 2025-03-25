@@ -1,0 +1,119 @@
+{
+  "info": {
+    "year": "2025",
+    "version": "1",
+    "description": "Exported from roboflow.com",
+    "contributor": "",
+    "url": "https://public.roboflow.com/object-detection/undefined",
+    "date_created": "2025-02-08T12:30:01+00:00"
+  },
+  "licenses": [
+    {
+      "id": 1,
+      "url": "https://creativecommons.org/licenses/by/4.0/",
+      "name": "CC BY 4.0"
+    }
+  ],
+  "categories": [
+    {
+      "id": 0,
+      "name": "chair",
+      "supercategory": "none"
+    },
+    {
+      "id": 1,
+      "name": "Face",
+      "supercategory": "chair"
+    }
+  ],
+  "images": [
+    {
+      "id": 0,
+      "license": 1,
+      "file_name": "images-3-_jpeg_jpg.rf.f832808b1b36a202979c99709deb0546.jpg",
+      "height": 640,
+      "width": 640,
+      "date_captured": "2025-02-08T12:30:01+00:00"
+    },
+    {
+      "id": 1,
+      "license": 1,
+      "file_name": "gravitate-faces_mp4-26_jpg.rf.52ac866b457805251f25af5a4a7330ae.jpg",
+      "height": 416,
+      "width": 416,
+      "date_captured": "2023-05-18T22:06:16+00:00"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 10,
+      "image_id": 0,
+      "category_id": 1,
+      "bbox": [
+        26,
+        137,
+        195.3,
+        375.91
+      ],
+      "area": 73415.223,
+      "segmentation": [],
+      "iscrowd": 0
+    },
+    {
+      "id": 11,
+      "image_id": 0,
+      "category_id": 1,
+      "bbox": [
+        249,
+        153,
+        180.41,
+        359.06
+      ],
+      "area": 64778.015,
+      "segmentation": [],
+      "iscrowd": 0
+    },
+    {
+      "id": 12,
+      "image_id": 0,
+      "category_id": 1,
+      "bbox": [
+        446,
+        102,
+        161.52,
+        435.64
+      ],
+      "area": 70364.573,
+      "segmentation": [],
+      "iscrowd": 0
+    },
+    {
+      "id": 5511,
+      "image_id": 1,
+      "category_id": 2,
+      "bbox": [
+        98,
+        227,
+        54,
+        94
+      ],
+      "area": 5076,
+      "segmentation": [],
+      "iscrowd": 0
+    },
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 2,
+      "bbox": [
+        253,
+        252,
+        93,
+        164
+      ],
+      "area": 15252,
+      "segmentation": [],
+      "iscrowd": 0
+    }
+  ]
+}
